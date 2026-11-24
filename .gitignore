@@ -2,5 +2,7 @@ node_modules/
 *.log
 .DS_Store
 
-# esbuild bundle: built by `npm run build` (also runs on install via prepare)
+# Build artifacts: `npm run build` (also runs on install via prepare) writes
+# the Host bundle and the browser bundle DSH's client module system serves.
 /index.js
+/lib/

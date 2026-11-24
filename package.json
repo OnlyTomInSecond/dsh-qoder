@@ -8,29 +8,38 @@
   "main": "index.js",
   "exports": {
     ".": "./index.js",
+    "./client": "./lib/client.js",
     "./locale/*.json": "./locale/*.json",
     "./icon": "./icon.svg",
     "./package.json": "./package.json"
   },
   "files": [
     "index.js",
+    "lib/client.js",
     "cordis.patch.yml",
     "locale/*.json",
     "icon.svg",
     "README.md",
     "scripts/smoke.mjs",
-    "scripts/config-page-smoke.mjs"
+    "scripts/config-card-smoke.mjs"
   ],
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-plugin-manager"
+      ],
+      "external": []
     }
   },
   "scripts": {
     "build": "node build.mjs",
     "smoke": "node scripts/smoke.mjs",
-    "smoke:config": "node scripts/config-page-smoke.mjs",
-    "prepare": "npm run build"
+    "prepare": "npm run build",
+    "smoke:config": "node scripts/config-card-smoke.mjs"
   },
   "devDependencies": {
     "@deepseek-ai/schemastery": "^3.19.0",
