@@ -81,6 +81,23 @@ export class QoderCredentialStore {
     this.memory.delete(mode);
   }
 
+  /**
+   * Whether some token is configured for this region, without exchanging or
+   * refreshing it.
+   *
+   * A model list asks this instead of listing nothing and letting the user
+   * guess: a route with a token is selectable, and a route without one shows no
+   * models at all (which is also what llm-pi-ai does for a missing key).
+   */
+  async hasToken(mode: QoderMode): Promise<boolean> {
+    try {
+      return (await this.findToken(mode)) !== undefined;
+    } catch (error) {
+      debugLog(`failed to read Qoder token state for ${mode}`, error);
+      return false;
+    }
+  }
+
   /** Resolve a usable credential, refreshing it when it is about to expire. */
   async get(mode: QoderMode): Promise<QoderCredentials> {
     const cached = this.memory.get(mode);

@@ -18,8 +18,11 @@ function createHost(initialProviders = {}) {
     async describe(ref) {
       return tokens.has(ref) ? { configured: true, writable: true, masked: "••••" } : { configured: false, writable: true };
     },
+    async resolve(ref) { return tokens.has(ref) ? { value: tokens.get(ref) } : undefined; },
     async set(ref, token) { tokens.set(ref, token); },
     async unset(ref) { tokens.delete(ref); },
+    async readRecord() { return undefined; },
+    async modifyRecord() {},
   };
   const settings = {
     describe() { return [{ ns: "llm-qoder", revision, value }]; },
@@ -75,6 +78,11 @@ const host = createHost();
 check("route registered at the documented path", host.route()?.path === CONFIG_PAGE_PATH, host.route()?.path);
 check("route requires authentication", host.route()?.auth === "required", host.route()?.auth);
 
+// The model list is what the model picker reads, so an empty one is exactly
+// the "token saved but no models" failure. It must follow the token, not the
+// profile entry: the two are recorded separately.
+check("no token means no models", (await host.adapter.listModels("qoder")).length === 0);
+
 const page = await host.request("GET");
 check("GET answers HTML", page.status === 200 && page.headers["content-type"]?.startsWith("text/html"), `${page.status} ${page.headers["content-type"]}`);
 check("page shows both regions", page.body.includes('name="token_global"') && page.body.includes('name="token_cn"'));
@@ -84,6 +92,8 @@ const saved = await host.request("POST", "token_global=pt-smoke&contextWindowMod
 check("save redirects", saved.status === 303, saved.status);
 check("token stored under the region ref", host.tokens.get("QODER_API_KEY") === "pt-smoke", host.tokens.get("QODER_API_KEY"));
 check("profile marked as added", host.value().providers.qoder !== undefined, JSON.stringify(host.value().providers));
+const models = await host.adapter.listModels("qoder");
+check("a saved token yields models", models.length > 0, `${models.length} models`);
 const optionOps = host.writes.at(-1).filter((op) => op.path[0] !== "providers");
 check("custom window saved", optionOps.some((op) => op.path[0] === "contextWindow" && op.value === 400000));
 check("zero delta interval is accepted", optionOps.some((op) => op.path[0] === "streamDeltaIntervalMs" && op.value === 0));
@@ -109,9 +119,17 @@ check("custom mode without a number is refused", customBlank.status === 400, cus
 
 await host.request("POST", "token_global_clear=on&contextWindowMode=catalog");
 check("clear removes the token", host.tokens.has("QODER_API_KEY") === false);
+check("a cleared token yields no models", (await host.adapter.listModels("qoder")).length === 0);
 
 const reloaded = await host.request("GET");
 check("page still renders after writes", reloaded.status === 200 && reloaded.body.includes('name="token_global"'));
+
+// A token can outlive its profile entry: the profile lives in this plugin's
+// Config, the token in the credential store, and a Config reset (or a profile
+// edit) can drop one without the other. The model list follows the token.
+host.tokens.set("QODER_API_KEY", "jt-orphan");
+const orphanModels = await host.adapter.listModels("qoder");
+check("a stored token lists models even without a profile entry", orphanModels.length > 0, `${orphanModels.length} models`);
 
 // A headless composition has no webServer: registration must be a no-op, not a throw.
 apply({

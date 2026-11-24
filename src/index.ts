@@ -74,7 +74,7 @@ const CATALOG_RETRY_MS = 5 * 60_000;
 
 const ATTRIBUTION = "deepseek-harness (+https://github.com/deepseek-ai/deepseek-harness)";
 
-/** Whether a route has been added to this plugin's Config; absent settings means headless. */
+/** Whether the Models page should treat a route as added: its profile exists. */
 function profileGate(ctx: LlmContext, providers: Config["providers"]) {
   return (mode: QoderMode): boolean =>
     ctx.get?.("settings") === undefined || providers?.get()?.[mode === "cn" ? "qoder-cn" : "qoder"] !== undefined;
@@ -148,7 +148,12 @@ class QoderAdapter {
 
   async listModels(provider: string) {
     const mode = modeOf(provider);
-    if (!this.configured(mode)) return [];
+    // Gate on a configured token rather than on "the profile was added": the
+    // two are recorded independently (the profile in this plugin's Config, the
+    // token in the credential store), and a stored token with a missing profile
+    // entry used to hide every model. Offering nothing until a token exists
+    // matches llm-pi-ai's behaviour for a missing key.
+    if (!(await this.store.hasToken(mode))) return [];
     // Stale-while-revalidate: the picker reads the cached (or static) catalog
     // immediately and the refresh lands for the next read. Awaiting the live
     // fetch here made every switch after the one-hour TTL (and every retry
