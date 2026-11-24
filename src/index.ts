@@ -10,6 +10,7 @@ import z from "@deepseek-ai/schemastery";
 import { getCachedModelConfig, getCachedModels, isCacheStale, updateQoderModelsCache, withPriceFactorLabel } from "./qoder/catalog.js";
 import { debugLog } from "./qoder/debug.js";
 import { getQoderRegionConfig, QODER_MODES, type QoderMode } from "./qoder/region.js";
+import { bindQoderSettings, type QoderConfigFields, qoderSettingsFields } from "./qoder/settings.js";
 import { streamQoder } from "./qoder/protocol/stream.js";
 import { QoderAuthError, QoderCredentialStore } from "./qoder-credentials.js";
 import { buildPiContext, prepareImages, type AttachmentBridge, type DshGenerateOptions, type HostBridge } from "./pi-context.js";
@@ -18,13 +19,11 @@ import { bridgeStream, QoderStreamError } from "./stream-bridge.js";
 export const name = "llm-qoder";
 export const inject = ["llm"];
 
-export interface Config {
+export interface Config extends QoderConfigFields {
   /** Provider profiles added through Settings > Models; live, so edits apply without a remount. */
   providers?: { get(): Record<string, unknown> | undefined };
   /** Persist exchanged/refreshed credentials in the DSH credential record. Defaults to true. */
   persistCredentials?: boolean;
-  /** Provider idle timeout for one stream read, in milliseconds. */
-  streamIdleTimeoutMs?: number;
 }
 
 // A real schemastery schema, like llm-pi-ai's: the Models page rehydrates this
@@ -45,8 +44,10 @@ export const Config = z.object({
   providers: z.dict(QODER_PROFILE).default({}).volatile(),
   /** Persist exchanged/refreshed credentials in the DSH credential record. Defaults to true. */
   persistCredentials: z.boolean().default(true),
-  /** Provider idle timeout for one stream read, in milliseconds. */
-  streamIdleTimeoutMs: z.natural(),
+  // The Credit/stream knobs live in `qoder/settings.ts` because the protocol
+  // layer resolves them per request; spreading the fields keeps one schema as
+  // the single source of truth for their defaults and bounds.
+  ...qoderSettingsFields,
 });
 
 interface SettingsChild {
@@ -110,7 +111,6 @@ class QoderAdapter {
   constructor(
     private readonly store: QoderCredentialStore,
     private readonly host: HostBridge,
-    private readonly config: Config,
     private readonly configured: (mode: QoderMode) => boolean,
   ) {}
 
@@ -223,11 +223,6 @@ class QoderAdapter {
           ...(options.reasoningEffort === undefined ? {} : { reasoning: options.reasoningEffort as never }),
           ...(options.sessionId === undefined ? {} : { sessionId: String(options.sessionId) }),
           headers: { "user-agent": ATTRIBUTION },
-          env: {
-            ...(this.config.streamIdleTimeoutMs === undefined
-              ? {}
-              : { QODER_STREAM_IDLE_TIMEOUT_MS: String(this.config.streamIdleTimeoutMs) }),
-          },
         },
       );
       yield* bridgeStream(events, options.signal);
@@ -248,6 +243,9 @@ export function apply(ctx: LlmContext, rawConfig: unknown): void {
   // and one being unconfigured costs nothing. The Models page decides which
   // ones a user actually adds.
   const routes = QODER_MODES.map((mode) => getQoderRegionConfig(mode).providerID);
+  // The protocol layer resolves these per request; binding the (volatile)
+  // fields here is what makes a settings edit reach the next request.
+  bindQoderSettings(config);
   const store = new QoderCredentialStore(ctx, config.persistCredentials !== false);
   ctx.on?.("credentials/reference-updated", (ref) => {
     if (ref === "QODER_ACCESS_TOKEN" || ref === "QODER_API_KEY") store.invalidate("global");
@@ -286,7 +284,6 @@ export function apply(ctx: LlmContext, rawConfig: unknown): void {
     new QoderAdapter(
       store,
       host,
-      config,
       (mode) => ctx.get?.("settings") === undefined
         || providers?.get()?.[mode === "cn" ? "qoder-cn" : "qoder"] !== undefined,
     ),

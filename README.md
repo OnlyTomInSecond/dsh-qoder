@@ -154,8 +154,17 @@ Host 侧安装后立即生效。**Settings → Models → Add provider** 中会�
   name: '@local/dsh-llm-qoder'
   config:
     persistCredentials: true   # 刷新后的凭据写入 DSH 凭据记录
-    streamIdleTimeoutMs: 120000
 ```
+
+### 额度与流式选项
+
+这些选项与 pi 插件的 `/qoder-settings` 同名同义，区别是 DSH 插件把它们声明为 **volatile Config 字段**：直接写在 profile patch 里，或在生成的插件设置表单里改，**下一次请求立即生效**，不需要重新挂载。取值优先级是 **环境变量 > Config > 默认值**，环境变量仍然可以覆盖一次性的运行。
+
+| 字段 | 默认 | 作用 | 环境变量 |
+|---|---|---|---|
+| `streamIdleTimeoutMs` | `120000` | 单个流读取的空闲超时 | `QODER_STREAM_IDLE_TIMEOUT_MS` |
+| `streamDeltaIntervalMs` | `50` | 文本/思考增量的合并间隔，`0` 表示不合并 | `QODER_STREAM_DELTA_INTERVAL_MS` |
+| `debug` | `false` | 输出 best-effort 路径的诊断日志 | `QODER_DEBUG` |
 
 ## 两个区域
 
@@ -175,6 +184,7 @@ Host 侧安装后立即生效。**Settings → Models → Add provider** 中会�
 | `src/index.ts` | DSH provider 路由、模型元数据、流式调用入口 |
 | `src/qoder-credentials.ts` | DSH 凭据引用 / DSH 记录 / 环境变量的解析与刷新 |
 | `src/pi-context.ts` | DSH 消息与工具 → pi transcript |
+| `src/qoder/settings.ts` | Credit/流式选项：volatile Config schema + 每请求解析 |
 | `src/stream-bridge.ts` | pi 事件 → DSH `StreamChunk` |
 | `src/qoder/` | 自包含的 Qoder 协议实现（含 `pi-ai.ts` 本地类型/辅助函数，无外部运行时依赖） |
 

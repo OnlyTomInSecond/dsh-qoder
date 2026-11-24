@@ -14,9 +14,10 @@ import { getCachedModelConfig } from "../catalog.js";
 import { buildAuthHeaders, getMachineId } from "../cosy.js";
 import { readResponseText, withAbort } from "../http.js";
 import { getQoderChatURL, getQoderModeForProvider, getQoderRegionConfig } from "../region.js";
-import { MAX_STREAM_BUFFER_LENGTH, readNumericOption } from "../util.js";
+import { MAX_STREAM_BUFFER_LENGTH } from "../util.js";
 import { yieldToEventLoop } from "../yield.js";
-import { DELTA_FLUSH_INTERVAL_MS, DeltaCoalescer } from "./delta-coalescer.js";
+import { currentQoderSettings } from "../settings.js";
+import { DeltaCoalescer } from "./delta-coalescer.js";
 import { type DsmlParserEvent, DsmlToolCallParser } from "./dsml.js";
 import { qoderEncodeBodyAsync } from "./encoding.js";
 import { buildQoderChatRequest, isResumeAttempt, QODER_RESUME_ATTEMPT } from "./request-builder.js";
@@ -28,7 +29,6 @@ import { applyQoderUsage } from "./usage.js";
 
 const SSE_LINES_PER_YIELD = 32;
 type QoderStreamEvent = Parameters<AssistantMessageEventStream["push"]>[0];
-const QODER_STREAM_IDLE_TIMEOUT_MS = 120_000;
 
 interface MappedFinishReason {
   stopReason: "stop" | "length" | "toolUse" | "error";
@@ -84,13 +84,11 @@ export function streamQoder(
     timestamp: Date.now(),
   };
 
-  const deltaIntervalMs = readNumericOption(
-    "QODER_STREAM_DELTA_INTERVAL_MS",
-    options?.env,
-    DELTA_FLUSH_INTERVAL_MS,
-    (value) => Number.isFinite(value) && value >= 0,
-  );
-  const coalescer = new DeltaCoalescer(deltaIntervalMs, (event) => stream.push(event));
+  // Every stream knob comes from one settings snapshot, so a mid-flight
+  // settings edit cannot change the coalescing interval under the running
+  // stream.
+  const settings = currentQoderSettings(options?.env);
+  const coalescer = new DeltaCoalescer(settings.streamDeltaIntervalMs, (event) => stream.push(event));
   const pushEvent = (event: QoderStreamEvent): void => coalescer.push(event);
   let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
   let response: Response | undefined;
@@ -206,15 +204,7 @@ export function streamQoder(
 
       const outgoingConfig = (payload as { model_config?: { key?: string; source?: string } }).model_config;
       const modelSource = outgoingConfig?.source || modelConfig.source || "system";
-      // Resolve the (optional) idle-timeout override once per request instead of
-      // re-reading process.env on every streamed chunk.
-      const idleTimeoutMs = readNumericOption(
-        "QODER_STREAM_IDLE_TIMEOUT_MS",
-        options?.env,
-        QODER_STREAM_IDLE_TIMEOUT_MS,
-        (value) => Number.isFinite(value) && value > 0,
-      );
-      abortScope.startIdleWatch(idleTimeoutMs);
+      abortScope.startIdleWatch(settings.streamIdleTimeoutMs);
 
       const fetchPromise = (options?.fetch ?? fetch)(chatURL, {
         method: "POST",
