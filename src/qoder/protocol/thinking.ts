@@ -120,6 +120,23 @@ export function stripThinkingTags(text: string): string {
   return text.replace(ALL_TAG_PATTERN, "");
 }
 
+// Qoder's gateway occasionally fails to turn a model's tool-call intent into
+// OpenAI-style `tool_calls` and leaks its internal DSML markup instead —
+// closing tags, into whichever channel it was halfway through. Seen in the
+// wild as a full-width DSML closing tag, a bare </invoke> or </parameter>, and
+// </function_call>, alone or repeated dozens of times. Left in place they poison
+// the thinking block, which the next turn replays into the prompt once
+// `replayReasoning` allows it.
+const DSML_TAG =
+  /<\/?[\uFF5C|]{0,2}\s*DSML\s*[\uFF5C|]{0,2}[^>]*>|<\/?(?:invoke|invocation|parameter|function_call|function_calls)\b[^>]*>/g;
+
+/**
+ * Strip leaked DSML tool-call markup and collapse the blank lines it leaves.
+ */
+export function stripDsmlResidue(text: string): string {
+  return text.replace(DSML_TAG, "").replace(/\n{3,}/g, "\n\n");
+}
+
 type Phase = "text" | "thinking";
 
 export interface ThinkingTagParserOptions {

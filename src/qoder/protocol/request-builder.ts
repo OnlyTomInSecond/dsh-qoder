@@ -167,7 +167,7 @@ export function buildQoderChatRequest(input: QoderChatRequestInput): QoderChatRe
   // leading system message.
   const transcriptMessages = withoutInitialSystemMessage(context.messages);
   const settings = currentQoderSettings(options?.env);
-  const normalizedMessages = transformMessagesForQoder(transcriptMessages);
+  const normalizedMessages = transformMessagesForQoder(transcriptMessages, settings.replayReasoning);
   // Resolve the current prompt and tool set in a single transcript pass:
   // getCurrentSystemPrompt() would re-walk the messages (and re-resolve the
   // tools internally) on top of the getCurrentTools() call below.

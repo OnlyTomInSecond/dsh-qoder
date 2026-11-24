@@ -8,6 +8,8 @@ import type {
   ToolCall,
   ToolResultMessage,
 } from "../pi-ai.js";
+import type { ReasoningReplay } from "../settings.js";
+import { stripDsmlResidue } from "./thinking.js";
 
 /** OpenAI-style tool definition sent to the Qoder API. */
 interface QoderTool {
@@ -87,7 +89,21 @@ export function transformTools(tools: Tool[]): QoderTool[] {
   }));
 }
 
-export function transformMessagesForQoder(messages: Message[]): QoderMessage[] {
+/**
+ * Map conversation history onto Qoder's OpenAI-shaped messages.
+ *
+ * `replayReasoning` decides how much prior assistant thinking is sent back:
+ * - `none` (default): drop it. Each replayed thinking token is billed again on
+ *   every following round; session reviews showed 45-65% of the prompt tokens
+ *   in reasoning-heavy sessions were old thinking.
+ * - `last`: keep only the most recent assistant turn's reasoning, which is the
+ *   one belonging to the still-open tool round.
+ * - `all`: qodercli-compatible behavior, replay everything.
+ */
+export function transformMessagesForQoder(
+  messages: Message[],
+  replayReasoning: ReasoningReplay = "none",
+): QoderMessage[] {
   const normalizedMessages: QoderMessage[] = [];
 
   // Every tool result must refer to exactly one tool call declared by an
@@ -109,6 +125,15 @@ export function transformMessagesForQoder(messages: Message[]): QoderMessage[] {
   // Accumulate them here and flush only once all tool results for the current
   // assistant round have been processed.
   const deferredImageMessages: QoderMessage[] = [];
+
+  // Index of the final assistant turn, for `replayReasoning: "last"`.
+  let lastAssistantIndex = -1;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].role === "assistant") {
+      lastAssistantIndex = i;
+      break;
+    }
+  }
 
   const flushDeferredImages = (): void => {
     // Append the whole batch at once: shift() in a loop is O(k^2) and the
@@ -135,7 +160,8 @@ export function transformMessagesForQoder(messages: Message[]): QoderMessage[] {
     }
   }
 
-  for (const msg of messages) {
+  for (let i = 0; i < messages.length; i++) {
+    const msg = messages[i];
     // Error/aborted assistant turns are omitted entirely. Their tool calls are
     // therefore not added to declaredToolCallIds, so any following results are
     // filtered by the validation below.
@@ -209,8 +235,9 @@ export function transformMessagesForQoder(messages: Message[]): QoderMessage[] {
             // `reasoning_content` field and keeps the text content free of
             // inline `<thinking>` wrappers. Mirror that: inlining the tags can
             // make upstream reasoning models degenerate into empty
-            // "reasoning-only" turns on later calls.
-            reasoningContent += (block as ThinkingContent).thinking;
+            // "reasoning-only" turns on later calls. Stored text may also
+            // contain leaked DSML markup, which must not be replayed.
+            reasoningContent += stripDsmlResidue((block as ThinkingContent).thinking);
           } else if (block.type === "toolCall") {
             const tc = block as ToolCall;
             toolCalls.push({
@@ -234,12 +261,16 @@ export function transformMessagesForQoder(messages: Message[]): QoderMessage[] {
       // single-space placeholder so the gateway keeps the message.
       const mapped: QoderMessage = {
         role: "assistant",
-        content: content || (toolCalls.length > 0 ? " " : null),
+        content: content || (toolCalls.length > 0 || reasoningContent ? " " : null),
       };
       if (toolCalls.length > 0) {
         mapped.tool_calls = toolCalls;
       }
-      if (reasoningContent) {
+      // Reasoning is replayed only when the policy allows it. `reasoningContent`
+      // is still accumulated above so the placeholder decision does not change
+      // with the policy.
+      const keepReasoning = replayReasoning === "all" || (replayReasoning === "last" && i === lastAssistantIndex);
+      if (reasoningContent && keepReasoning) {
         mapped.reasoning_content = reasoningContent;
       }
       normalizedMessages.push(mapped);
