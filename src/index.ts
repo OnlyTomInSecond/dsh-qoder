@@ -10,7 +10,7 @@ import z from "@deepseek-ai/schemastery";
 import { getCachedModelConfig, getCachedModels, isCacheStale, updateQoderModelsCache, withPriceFactorLabel } from "./qoder/catalog.js";
 import { debugLog } from "./qoder/debug.js";
 import { getQoderRegionConfig, QODER_MODES, type QoderMode } from "./qoder/region.js";
-import { bindQoderSettings, type QoderConfigFields, qoderSettingsFields } from "./qoder/settings.js";
+import { bindQoderSettings, currentQoderSettings, type QoderConfigFields, qoderSettingsFields } from "./qoder/settings.js";
 import { streamQoder } from "./qoder/protocol/stream.js";
 import { QoderAuthError, QoderCredentialStore } from "./qoder-credentials.js";
 import { buildPiContext, prepareImages, type AttachmentBridge, type DshGenerateOptions, type HostBridge } from "./pi-context.js";
@@ -87,9 +87,18 @@ function efforts(model: ReturnType<typeof getCachedModels>[number] | undefined) 
 
 function info(provider: string, modelId: string) {
   const mode = modeOf(provider);
-  const model = getCachedModels(mode).find((entry) => entry.id === modelId);
+  const models = getCachedModels(mode);
+  const model = models.find((entry) => entry.id === modelId);
   if (!model) {
-    return { provider, id: modelId, name: modelId, inputModalities: ["text"], context: { contextWindow: 1_000_000 }, defaultMaxTokens: 131_072 };
+    const settings = currentQoderSettings();
+    return {
+      provider,
+      id: modelId,
+      name: modelId,
+      inputModalities: ["text"],
+      context: { contextWindow: settings.contextWindow ?? models[0]?.contextWindow ?? 200_000 },
+      defaultMaxTokens: settings.maxOutputTokens,
+    };
   }
   const reasoning = efforts(model);
   return {

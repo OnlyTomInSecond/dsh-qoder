@@ -7,31 +7,19 @@ import { getDshHomeDir } from "./home.js";
 import { fetchQoderJson } from "./http.js";
 import { parseQoderPriceFactor } from "./protocol/usage.js";
 import { getQoderBaseUrl, getQoderModelListURL, getQoderRegionConfig, type QoderMode } from "./region.js";
+import { currentQoderSettings, DEFAULT_MAX_OUTPUT_TOKENS, type QoderSettings } from "./settings.js";
 
 export const ZERO_COST = Object.freeze({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
 
 /**
- * Maximum output tokens sent per request. Aliyun Model Studio (the upstream
- * behind Qoder's CN catalog) documents Max Output Length = 131072 for every
- * model we expose (qwen3.8-max/flash, qwen3.7-max/plus/flash), in both normal
- * and thinking modes (thinking chain alone goes up to 262144). The Qoder
- * /model/list catalog does not return a per-model output cap, so this single
- * constant is the source of truth for both static models and request sending.
- * qodercli ships a conservative 32e3 default and caps its UI at 65536; we use
- * the documented upstream ceiling so reasoning chains and long generations
- * are not truncated.
- */
-export const MAX_OUTPUT_TOKENS = 131072;
-
-/**
  * Fallback context window when the catalog omits `context_config`.
  *
- * Qoder's `/model/list` often ships `max_input_tokens` as a stale 180K floor
- * even for models that accept 1M-token prompts (verified against global `lite`
- * through 1,000K tokens). When `context_config` is present we use its largest
- * `token_count` instead, so models that truly advertise 200K/256K stay there.
+ * Matches what Qoder itself treats as the baseline prompt size. `max_input_tokens`
+ * (when advertised) is preferred over this value; the 1M figure that used to
+ * live here was a guess that let a session grow to ~1M tokens (and bill every
+ * round for it) even for models whose catalog entry only offers 200K.
  */
-export const DEFAULT_CONTEXT_WINDOW = 1000000;
+export const DEFAULT_CONTEXT_WINDOW = 200000;
 
 /** Shape of a single entry returned by the Qoder /model/list endpoint. */
 export interface QoderModelEntry {
@@ -151,9 +139,11 @@ class QoderCatalogStore {
         if (!entry || typeof entry !== "object" || !entry.display_name) continue;
         const displayId = toQoderModelId(entry.display_name);
         if (displayId && displayId !== "QoderModel" && !index.has(displayId)) {
-          // Fold in the max-context default once, at index build time, instead
-          // of rebuilding context_config on every request.
-          index.set(displayId, withMaxContextAsDefault(entry as QoderModelEntry));
+          // Keep the catalog entry exactly as published: the request builder
+          // forwards `model_config` verbatim, so rewriting `is_default` here
+          // would ask the gateway for a different context tier than the one
+          // Qoder itself recommends (and bills for).
+          index.set(displayId, entry as QoderModelEntry);
         }
       }
     }
@@ -218,7 +208,7 @@ export function toQoderModelId(displayName?: string): string {
   return (displayName || "QoderModel").replace(/\s+/g, "");
 }
 
-/** Append the relative Credit multiplier so pi's model picker shows it. */
+/** Append the relative Credit multiplier so the model picker shows it. */
 export function withPriceFactorLabel(name: string, priceFactor?: number): string {
   return priceFactor !== undefined ? `${name} (×${priceFactor})` : name;
 }
@@ -247,6 +237,7 @@ interface ModelDefFields {
   reasoning: boolean;
   input: ("text" | "image")[];
   contextWindow: number;
+  maxTokens: number;
   upstreamKey?: string;
   supportsEffort: boolean;
   thinkingLevelMap?: ThinkingLevelMap;
@@ -254,14 +245,41 @@ interface ModelDefFields {
   priceFactor?: number;
 }
 
-/** Build a model def, stamping the constants every Qoder model shares. */
+/**
+ * Overlay the settings that decide how many Credits a request burns.
+ *
+ * Both are recomputed on every read rather than trusted from a cache file: a
+ * cache written by an older release may carry the 1M window / 131K output cap,
+ * and those must not keep inflating Credits for the rest of its TTL.
+ *
+ * `entry` is the live catalog config when there is one, so the tier Qoder
+ * advertises decides the window; a static seed keeps its declared window and
+ * only honours an explicit override.
+ */
+function withSettings(def: QoderModelDef, settings: QoderSettings, entry?: QoderModelEntry): QoderModelDef {
+  return {
+    ...def,
+    maxTokens: settings.maxOutputTokens,
+    // An explicit override wins for a static seed too; without one it keeps the
+    // window its row declares.
+    contextWindow: entry ? contextWindowFromCatalog(entry, settings) : (settings.contextWindow ?? def.contextWindow),
+  };
+}
+
+/**
+ * Build a model def, stamping the constants every Qoder model shares.
+ *
+ * `maxTokens` and `contextWindow` come from the caller, which resolves them
+ * from the live settings: recomputing them per read (see `getCachedModels`) is
+ * what keeps a changed knob from staying pinned at the value a cache file was
+ * written with.
+ */
 function makeModelDef(mode: QoderMode, fields: ModelDefFields): QoderModelDef {
   return {
     api: "qoder-api",
     provider: getQoderRegionConfig(mode).providerID,
     baseUrl: getQoderBaseUrl(mode),
     cost: ZERO_COST,
-    maxTokens: MAX_OUTPUT_TOKENS,
     ...fields,
   };
 }
@@ -276,6 +294,7 @@ function buildStaticModels(mode: QoderMode, rows: readonly StaticModelRow[]): Qo
       supportsEffort: row.supportsEffort ?? false,
       input: row.vision ? ["text", "image"] : ["text"],
       contextWindow: row.contextWindow ?? DEFAULT_CONTEXT_WINDOW,
+      maxTokens: DEFAULT_MAX_OUTPUT_TOKENS,
       ...(row.description ? { description: row.description } : {}),
     }),
   );
@@ -416,27 +435,35 @@ function buildThinkingLevelMap(entry: QoderModelEntry): ThinkingLevelMap | undef
   return undefined;
 }
 
-export function getCachedModels(mode: QoderMode): QoderModelDef[] {
+export function getCachedModels(mode: QoderMode, env?: Readonly<Record<string, string | undefined>>): QoderModelDef[] {
+  const settings = currentQoderSettings(env);
   const store = getCatalogStore(mode);
   const data = store.read();
   if (data && Array.isArray(data.models)) {
     const staticByKey = store.staticSeeds("upstreamKey");
+    const configs = store.configs();
     const models = data.models.map((model: QoderModelDef) => {
-      const config = data.configs?.[model.id] as QoderModelEntry | undefined;
+      // Cached entries are keyed by the pi-visible id since 9d88e99; legacy
+      // caches key them by upstream key, so fall back to the config index.
+      const config = (data.configs?.[model.id] ?? configs.get(model.id)) as QoderModelEntry | undefined;
       const display = config?.display_name;
       const staticModel = staticByKey.get(model.id);
-      if (display) return { ...model, id: toQoderModelId(display), name: display };
-      if (staticModel) return { ...model, id: staticModel.id, name: staticModel.name };
-      return model.name ? { ...model, id: toQoderModelId(model.name) } : model;
+      const adjusted = withSettings(model, settings, config);
+      if (display) return { ...adjusted, id: toQoderModelId(display), name: display };
+      if (staticModel) return { ...adjusted, id: staticModel.id, name: staticModel.name };
+      return adjusted.name ? { ...adjusted, id: toQoderModelId(adjusted.name) } : adjusted;
     });
     // Older releases injected `auto` without a corresponding service config.
     // Keep an explicitly enabled service model, but drop the legacy fallback.
-    if (data.configs && typeof data.configs === "object" && !data.configs.auto) {
+    // Configs are keyed by display id (`Auto`) since the friendly-id refactor;
+    // older caches still key them by upstream raw key (`auto`), so check both.
+    if (data.configs && typeof data.configs === "object" && !data.configs.auto && !data.configs.Auto) {
       return models.filter((model: QoderModelDef) => model.id.toLowerCase() !== "auto");
     }
     return models;
   }
-  return mode === "cn" ? staticCnModels : staticModels;
+  const seeds = mode === "cn" ? staticCnModels : staticModels;
+  return seeds.map((model) => withSettings(model, settings));
 }
 
 /**
@@ -465,38 +492,54 @@ export function getCachedModelConfig(modelId: string, mode: QoderMode): QoderMod
   return null;
 }
 
-/** Largest `context_config` token_count an entry advertises, or 0 when none. */
-function maxContextTokenCount(contextConfig: QoderModelEntry["context_config"]): number {
-  if (!contextConfig || typeof contextConfig !== "object") return 0;
-  let max = 0;
-  for (const config of Object.values(contextConfig)) {
-    if (config && typeof config === "object" && typeof config.token_count === "number" && config.token_count > max) {
-      max = config.token_count;
-    }
-  }
-  return max;
-}
-
-/** Resolve contextWindow from a catalog entry. Exported for tests. */
-export function contextWindowFromCatalog(entry: QoderModelEntry): number {
-  return maxContextTokenCount(entry.context_config) || DEFAULT_CONTEXT_WINDOW;
-}
-
-/** Prefer the largest context option when Qoder exposes selectable contexts. */
-function withMaxContextAsDefault(entry: QoderModelEntry): QoderModelEntry {
+/** `context_config` tiers, ascending by advertised token count. */
+function contextTiers(entry: QoderModelEntry): Array<{ tokens: number; isDefault: boolean }> {
   const contextConfig = entry.context_config;
-  const maxTokenCount = maxContextTokenCount(contextConfig);
-  if (maxTokenCount <= 0 || !contextConfig) return entry;
+  if (!contextConfig || typeof contextConfig !== "object") return [];
+  const tiers: Array<{ tokens: number; isDefault: boolean }> = [];
+  for (const config of Object.values(contextConfig)) {
+    if (!config || typeof config !== "object") continue;
+    const tokens = config.token_count;
+    if (typeof tokens !== "number" || !Number.isFinite(tokens) || tokens <= 0) continue;
+    tiers.push({ tokens, isDefault: config.is_default === true });
+  }
+  return tiers.sort((a, b) => a.tokens - b.tokens);
+}
 
-  return {
-    ...entry,
-    context_config: Object.fromEntries(
-      Object.entries(contextConfig).map(([name, config]) => [
-        name,
-        { ...config, is_default: config.token_count === maxTokenCount },
-      ]),
-    ),
-  };
+/**
+ * Resolve the context window the harness should budget for a catalog entry.
+ *
+ * Qoder advertises selectable context tiers (typically 200K/400K/1M) and
+ * charges more the more context a request carries, so the catalog's *default*
+ * tier wins (GLM-5.x: 200K). The previous "largest tier" behavior grew a
+ * session until ~984K tokens before compaction, and every intermediate round
+ * re-sent that prompt.
+ *
+ * Opt-outs (env or Config):
+ *   contextWindow=<tokens>  force a window (capped to the largest tier)
+ *   useMaxContext / QODER_CONTEXT_MAX=1   legacy: largest advertised tier
+ *
+ * Without `context_config`, the advertised `max_input_tokens` is the best known
+ * limit; DEFAULT_CONTEXT_WINDOW is the last resort.
+ */
+export function contextWindowFromCatalog(entry: QoderModelEntry, settings: QoderSettings): number {
+  const tiers = contextTiers(entry);
+  const largest = tiers[tiers.length - 1]?.tokens;
+
+  if (settings.contextWindow !== undefined) {
+    return largest !== undefined ? Math.min(settings.contextWindow, largest) : settings.contextWindow;
+  }
+  if (settings.useMaxContext && largest !== undefined) return largest;
+
+  const defaultTier = tiers.find((tier) => tier.isDefault)?.tokens;
+  if (defaultTier !== undefined) return defaultTier;
+  // No tier marked as default: take the smallest (cheapest) one rather than
+  // silently opting every request into the largest, most expensive context.
+  if (tiers.length > 0) return tiers[0].tokens;
+
+  const advertised = entry.max_input_tokens;
+  if (typeof advertised === "number" && Number.isFinite(advertised) && advertised > 0) return Math.round(advertised);
+  return DEFAULT_CONTEXT_WINDOW;
 }
 
 export function isCacheStale(mode: QoderMode, userID?: string): boolean {
@@ -567,6 +610,9 @@ async function fetchAndCacheModelList(
 
     const newModels: QoderModelDef[] = [];
     const configs: Record<string, QoderModelEntry> = {};
+    // The stored values only seed the cache: getCachedModels recomputes both
+    // from the live settings on every read, so a changed knob applies at once.
+    const settings = currentQoderSettings();
 
     for (const entry of chatModels) {
       const key = entry.key;
@@ -584,12 +630,10 @@ async function fetchAndCacheModelList(
         debugLog(`model catalog: duplicate pi id "${modelId}" (key ${key}); keeping the first entry`);
         continue;
       }
-      // Prefer the largest selectable context option the catalog advertises
-      // (e.g. 1M when 200K/400K/1M are offered). If none is advertised, use
-      // DEFAULT_CONTEXT_WINDOW rather than the stale 180K `max_input_tokens`
-      // floor. Do not seed from DEFAULT_CONTEXT_WINDOW before scanning
-      // context_config: that would inflate models that only advertise 200K.
-      const ctxLen = contextWindowFromCatalog(entry);
+      // Use the catalog's own default tier (e.g. 200K when 200K/400K/1M are
+      // offered) so the harness compacts at the prompt size Qoder actually
+      // charges for. `contextWindow` / `useMaxContext` opt into something larger.
+      const ctxLen = contextWindowFromCatalog(entry, settings);
       const isVL = !!entry.is_vl;
       const isReasoning = !!entry.is_reasoning || !!entry.thinking_config;
       const supportsEffort = !!entry.thinking_config?.enabled?.efforts;
@@ -611,6 +655,7 @@ async function fetchAndCacheModelList(
           thinkingLevelMap,
           input: isVL ? ["text", "image"] : ["text"],
           contextWindow: ctxLen,
+          maxTokens: settings.maxOutputTokens,
           ...(priceFactor !== undefined ? { priceFactor } : {}),
         }),
       );

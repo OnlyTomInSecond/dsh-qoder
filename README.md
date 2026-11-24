@@ -162,9 +162,14 @@ Host 侧安装后立即生效。**Settings → Models → Add provider** 中会�
 
 | 字段 | 默认 | 作用 | 环境变量 |
 |---|---|---|---|
+| `contextWindow` | 目录默认档 | 用于触发压缩的上下文预算。留空表示用 Qoder 目录自己标注的默认档（常见 200K），而不是最大档 | `QODER_CONTEXT_WINDOW` |
+| `useMaxContext` | `false` | 改用目录里最大的一档（更多压缩余量，也更多 Credit） | `QODER_CONTEXT_MAX=1` |
+| `maxOutputTokens` | `32768` | 单次请求 `max_tokens`（上限 131072） | `QODER_MAX_OUTPUT_TOKENS` |
 | `streamIdleTimeoutMs` | `120000` | 单个流读取的空闲超时 | `QODER_STREAM_IDLE_TIMEOUT_MS` |
 | `streamDeltaIntervalMs` | `50` | 文本/思考增量的合并间隔，`0` 表示不合并 | `QODER_STREAM_DELTA_INTERVAL_MS` |
 | `debug` | `false` | 输出 best-effort 路径的诊断日志 | `QODER_DEBUG` |
+
+上下文窗口按目录的 `context_config` 决策：优先取标记为 `is_default` 的档位；没有默认标记时取最小档（最便宜），再退到 `max_input_tokens`，最后才是内置的 200K 兜底。`contextWindow` 显式赋值会被夹到目录公布的最大档以内，因为上游不接受更大的窗口。
 
 ## 两个区域
 

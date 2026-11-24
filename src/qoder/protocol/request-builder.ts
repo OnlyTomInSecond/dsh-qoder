@@ -10,8 +10,9 @@ import {
   withoutInitialSystemMessage,
 } from "../pi-ai.js";
 import type { QoderIdentity } from "../auth/oauth.js";
-import { MAX_OUTPUT_TOKENS, type QoderModelEntry } from "../catalog.js";
+import type { QoderModelEntry } from "../catalog.js";
 import type { QoderMode } from "../region.js";
+import { currentQoderSettings } from "../settings.js";
 import { getQoderRunIdentity } from "./run-state.js";
 import { contentToText, transformMessagesForQoder, transformTools } from "./transform.js";
 
@@ -83,14 +84,18 @@ export interface QoderChatRequest {
   sessionID: string;
 }
 
-/** Resolve the output cap from the upstream ceiling and any host/pi limits. */
-function resolveMaxTokens(model: Model<Api>, options?: SimpleStreamOptions): number {
-  // Qoder's catalog exposes no per-model output cap, so we use the documented
-  // upstream ceiling (MAX_OUTPUT_TOKENS = 131072) and let pi cap it lower when
-  // the caller sets options.maxTokens (e.g. compaction at 40K). This avoids
-  // truncating reasoning chains / long generations that the 32K default would
-  // cut off.
-  let maxTokens = MAX_OUTPUT_TOKENS;
+/** Resolve the output cap from the configured default and any host limits. */
+function resolveMaxTokens(
+  model: Model<Api>,
+  settings: ReturnType<typeof currentQoderSettings>,
+  options?: SimpleStreamOptions,
+): number {
+  // Qoder's catalog exposes no per-model output cap, so the configured cap
+  // (`maxOutputTokens`, qodercli's 32K by default) is the source of truth.
+  // Output tokens carry the highest per-token price, so a bigger ceiling only
+  // lets a runaway reasoning chain cost more. The model metadata and the caller
+  // can still lower it (e.g. compaction at 40K).
+  let maxTokens = settings.maxOutputTokens;
   for (const limit of [model.maxTokens, options?.maxTokens]) {
     if (limit === undefined) continue;
     if (!Number.isInteger(limit) || limit <= 0) throw new Error("Qoder maxTokens must be a positive integer");
@@ -111,9 +116,10 @@ function resolveMaxTokens(model: Model<Api>, options?: SimpleStreamOptions): num
 function buildParameters(
   model: Model<Api>,
   modelConfig: QoderModelEntry,
+  settings: ReturnType<typeof currentQoderSettings>,
   options?: SimpleStreamOptions,
 ): Record<string, unknown> {
-  const parameters: Record<string, unknown> = { max_tokens: resolveMaxTokens(model, options) };
+  const parameters: Record<string, unknown> = { max_tokens: resolveMaxTokens(model, settings, options) };
   if (options?.temperature !== undefined) parameters.temperature = options.temperature;
 
   const requestedLevel = options?.reasoning;
@@ -160,6 +166,7 @@ export function buildQoderChatRequest(input: QoderChatRequestInput): QoderChatRe
   // to Qoder's OpenAI-shaped messages. The resolved prompt is then sent as one
   // leading system message.
   const transcriptMessages = withoutInitialSystemMessage(context.messages);
+  const settings = currentQoderSettings(options?.env);
   const normalizedMessages = transformMessagesForQoder(transcriptMessages);
   // Resolve the current prompt and tool set in a single transcript pass:
   // getCurrentSystemPrompt() would re-walk the messages (and re-resolve the
@@ -185,7 +192,7 @@ export function buildQoderChatRequest(input: QoderChatRequestInput): QoderChatRe
 
   const currentTools = currentSystem?.toolsAdded ?? [];
   const toolsRaw = currentTools.length > 0 ? transformTools(currentTools) : undefined;
-  const parameters = buildParameters(model, modelConfig, options);
+  const parameters = buildParameters(model, modelConfig, settings, options);
 
   // Qoder groups billing/records per agentic "run". qodercli keeps one
   // request_set_id + business.id per run (created at run start, threaded through
