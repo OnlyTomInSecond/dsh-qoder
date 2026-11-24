@@ -13,7 +13,8 @@
  * and `auth` stays at its default (`required`) because the form writes secrets.
  */
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { MAX_OUTPUT_TOKENS_LIMIT, type QoderSettings } from "./qoder/settings.js";
+import { advertisedContextTiers } from "./qoder/catalog.js";
+import { MAX_OUTPUT_TOKENS_LIMIT, qoderSettingsFromEnv, type QoderSettings } from "./qoder/settings.js";
 import { debugLog } from "./qoder/debug.js";
 import { getQoderRegionConfig, QODER_MODES, type QoderMode } from "./qoder/region.js";
 
@@ -76,6 +77,11 @@ export interface ConfigPageOptions {
   onCredentialsChanged: (mode: QoderMode) => void;
   /** Whether the route is currently added (mirrors the adapter's own gate). */
   configured: (mode: QoderMode) => boolean;
+  /**
+   * Environment overrides in force for this process. Injected so a test can
+   * pin them; defaults to the real environment read the same way a request does.
+   */
+  env?: Readonly<Record<string, string | undefined>>;
 }
 
 function escapeHtml(value: string): string {
@@ -128,6 +134,32 @@ function readSettings(settings: SettingsLike | undefined, ns: string): Partial<Q
   return value && typeof value === "object" ? (value as Partial<QoderSettings>) : {};
 }
 
+/**
+ * The context-window edits for one submission.
+ *
+ * Three modes, matching how the pi plugin's `/qoder-settings context` works:
+ *
+ *   catalog   no override; the catalog's own default tier decides (cheapest)
+ *   max       the largest tier the catalog advertises
+ *   custom    an explicit token count, clamped to the largest tier downstream
+ *
+ * `catalog` and `max` are the same pair of fields (`contextWindow: null`,
+ * `useMaxContext: bool`), so switching between them never leaves a stale
+ * explicit value behind.
+ */
+function contextWindowOps(form: URLSearchParams, problems: string[]): SettingsPathOp[] {
+  const choice = form.get("contextWindowMode")?.trim() ?? "catalog";
+  if (choice === "catalog") return [{ op: "unset", path: ["contextWindow"] }, { op: "set", path: ["useMaxContext"], value: false }];
+  if (choice === "max") return [{ op: "unset", path: ["contextWindow"] }, { op: "set", path: ["useMaxContext"], value: true }];
+  if (choice !== "custom") return [];
+  const window = numberField(form, "contextWindow");
+  if (window === undefined) {
+    problems.push("自定义上下文窗口需要一个大于 0 的整数。");
+    return [];
+  }
+  return [{ op: "set", path: ["contextWindow"], value: window }, { op: "set", path: ["useMaxContext"], value: false }];
+}
+
 /** Write the page's Config fields through one revision-checked mutation. */
 async function saveSettings(
   settings: SettingsLike | undefined,
@@ -140,8 +172,8 @@ async function saveSettings(
 
   const problems: string[] = [];
   const ops: SettingsPathOp[] = [];
-  const window = numberField(form, "contextWindow");
-  ops.push(window === undefined ? { op: "unset", path: ["contextWindow"] } : { op: "set", path: ["contextWindow"], value: window });
+  const windowOps = contextWindowOps(form, problems);
+  ops.push(...windowOps);
 
   const output = numberField(form, "maxOutputTokens");
   if (output !== undefined && output > MAX_OUTPUT_TOKENS_LIMIT) {
@@ -159,7 +191,6 @@ async function saveSettings(
   if (reasoning === "none" || reasoning === "last" || reasoning === "all") {
     ops.push({ op: "set", path: ["replayReasoning"], value: reasoning });
   }
-  ops.push({ op: "set", path: ["useMaxContext"], value: checked(form, "useMaxContext") });
   ops.push({ op: "set", path: ["debug"], value: checked(form, "debug") });
 
   if (problems.length > 0) return problems;
@@ -218,6 +249,51 @@ async function saveTokens(
     options.onCredentialsChanged(mode);
   }
   return [];
+}
+
+/**
+ * The context-window control: pick the catalog default, the largest tier, or a
+ * custom value.
+ *
+ * The presets are the tiers this region's catalog actually advertises, so the
+ * numbers are Qoder's own rather than a guess. An environment override is
+ * called out because it outranks anything the page writes.
+ */
+function contextWindowField(settings: Partial<QoderSettings>, options: ConfigPageOptions): string {
+  const pinned = qoderSettingsFromEnv(options.env).contextWindow;
+  const tiers = QODER_MODES.flatMap((mode) => advertisedContextTiers(mode));
+  const presets = [...new Set(tiers)].sort((a, b) => a - b);
+  const choice = pinned !== undefined ? "custom"
+    : settings.contextWindow !== undefined ? "custom"
+      : settings.useMaxContext ? "max" : "catalog";
+  const is = (mode: string): string => (choice === mode ? " selected" : "");
+  const labels = presets.map((tokens) => `${tokens / 1000}K`).join(" / ");
+  return `
+      <fieldset class="window">
+        <legend>上下文窗口</legend>
+        <label class="inline">
+          <input type="radio" name="contextWindowMode" value="catalog"${is("catalog")}>
+          目录默认档${presets.length === 0 ? "" : `（${labels} 中的默认档，最省）`}
+        </label>
+        <label class="inline">
+          <input type="radio" name="contextWindowMode" value="max"${is("max")}>
+          目录最大档${presets.length === 0 ? "" : `（${presets.at(-1)! / 1000}K，更多压缩余量，更贵）`}
+        </label>
+        <label class="inline">
+          <input type="radio" name="contextWindowMode" value="custom"${is("custom")}>
+          自定义
+        </label>
+        <div class="customWindow">
+          <input type="number" name="contextWindow" min="1" step="1" value="${settings.contextWindow ?? ""}"
+                 placeholder="${presets.length === 0 ? "输入 token 数" : "留空则沿用所选档位"}"
+                 ${presets.length === 0 ? "" : `list="contextWindowTiers"`}>
+          <datalist id="contextWindowTiers">
+            ${presets.map((tokens) => `<option value="${tokens}">${tokens / 1000}K</option>`).join("")}
+          </datalist>
+          <span class="muted">超过目录最大档会被夹到 ${presets.length === 0 ? "该值" : `${presets.at(-1)! / 1000}K`}</span>
+        </div>
+        ${pinned === undefined ? "" : `<p class="notice err">环境变量 QODER_CONTEXT_WINDOW=${pinned} 正在覆盖此设置。</p>`}
+      </fieldset>`;
 }
 
 function renderPage(options: ConfigPageOptions, state: {
@@ -295,8 +371,13 @@ function renderPage(options: ConfigPageOptions, state: {
   .notice.ok { background: color-mix(in srgb, #2e7d32 14%, Canvas); }
   .notice.err { background: color-mix(in srgb, #c62828 14%, Canvas); }
   code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; }
-  fieldset { border: 0; padding: 0; margin: 0; }
+  fieldset { border: 0; padding: 0; margin: 0 0 18px; }
   legend { font-weight: 600; font-size: 14px; padding: 0; margin: 0 0 10px; }
+  .window label.inline { margin: 0 0 6px; }
+  input[type=radio] { width: 15px; height: 15px; margin: 0; }
+  .customWindow { margin: 8px 0 0 23px; }
+  .customWindow input { max-width: 220px; }
+  .customWindow .muted { margin: 6px 0 0; }
 </style>
 </head>
 <body>
@@ -310,11 +391,8 @@ function renderPage(options: ConfigPageOptions, state: {
     <section class="card">
       <header><h2>上下文与额度</h2></header>
       <p class="muted">这些选项决定每次请求烧多少 Credit。</p>
+      ${contextWindowField(settings, options)}
       <div class="grid">
-        <label>上下文窗口（tokens）
-          <input type="number" name="contextWindow" min="1" step="1" value="${number(settings.contextWindow)}"
-                 placeholder="留空 = 目录默认档">
-        </label>
         <label>单次输出上限（tokens）
           <input type="number" name="maxOutputTokens" min="1" max="${MAX_OUTPUT_TOKENS_LIMIT}" step="1"
                  value="${number(settings.maxOutputTokens)}" placeholder="默认 32768">
@@ -335,8 +413,6 @@ function renderPage(options: ConfigPageOptions, state: {
                  placeholder="默认 50">
         </label>
       </div>
-      <label class="inline"><input type="checkbox" name="useMaxContext"${settings.useMaxContext ? " checked" : ""}>
-        使用目录中最大的上下文档（更贵）</label>
       <label class="inline"><input type="checkbox" name="debug"${settings.debug ? " checked" : ""}>
         输出诊断日志</label>
     </section>

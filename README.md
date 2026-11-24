@@ -69,7 +69,9 @@ http://<你的 DSH 地址>/qoder/settings
 页面提供：
 
 - **每个区域的访问令牌**（`Qoder` / `Qoder CN`），写入 DSH 凭据存储的 `QODER_API_KEY` / `QODER_CN_API_KEY` 引用，不落到配置文件；可覆盖或删除。
-- **上下文与额度选项**：上下文窗口、输出上限、思考回放、流空闲超时、增量合并间隔、`useMaxContext`、`debug`，与「配置」一节的字段一一对应。
+- **上下文窗口三选一**：目录默认档 / 目录最大档 / 自定义，与 pi 插件的 `/qoder-settings context <default|max|tokens>` 同一套语义。档位选项来自当前区域目录实际公布的 `context_config`（如 200K / 400K / 1M），不是硬编码值；自定义值超过目录最大档会被夹到该档（上游不接受更大的窗口）。
+- **其余额度选项**：输出上限、思考回放、流空闲超时、增量合并间隔、`debug`，与「配置」一节的字段一一对应。
+- 若进程环境设置了 `QODER_CONTEXT_WINDOW`，页面会提示该环境变量正在覆盖页面设置——环境变量优先级更高。
 - 保存令牌时同时把 `providers.<region>` 写进插件 Config，所以保存后模型选择器立刻出现该区域的模型。
 
 实现是用 `ctx.webServer` 注册一条 Host 路由（`src/qoder-config-page.ts`），因此：

@@ -80,21 +80,34 @@ check("GET answers HTML", page.status === 200 && page.headers["content-type"]?.s
 check("page shows both regions", page.body.includes('name="token_global"') && page.body.includes('name="token_cn"'));
 check("page shows the Credit knobs", page.body.includes('name="contextWindow"') && page.body.includes('name="replayReasoning"'));
 
-const saved = await host.request("POST", "token_global=pt-smoke&contextWindow=400000&replayReasoning=last&streamDeltaIntervalMs=0");
+const saved = await host.request("POST", "token_global=pt-smoke&contextWindowMode=custom&contextWindow=400000&replayReasoning=last&streamDeltaIntervalMs=0");
 check("save redirects", saved.status === 303, saved.status);
 check("token stored under the region ref", host.tokens.get("QODER_API_KEY") === "pt-smoke", host.tokens.get("QODER_API_KEY"));
 check("profile marked as added", host.value().providers.qoder !== undefined, JSON.stringify(host.value().providers));
 const optionOps = host.writes.at(-1).filter((op) => op.path[0] !== "providers");
-check("window saved", optionOps.some((op) => op.path[0] === "contextWindow" && op.value === 400000));
+check("custom window saved", optionOps.some((op) => op.path[0] === "contextWindow" && op.value === 400000));
 check("zero delta interval is accepted", optionOps.some((op) => op.path[0] === "streamDeltaIntervalMs" && op.value === 0));
 
-const refused = await host.request("POST", "maxOutputTokens=999999");
+const refused = await host.request("POST", "maxOutputTokens=999999&contextWindowMode=custom&contextWindow=200000");
 check("over-limit output is refused", refused.status === 400, refused.status);
 
-const blank = await host.request("POST", "contextWindow=");
-check("blank window unsets", blank.status === 303 && host.writes.at(-1).some((op) => op.op === "unset" && op.path[0] === "contextWindow"));
+// The three window modes: catalog clears both fields, max sets the flag,
+// custom requires a number.
+const setPath = (ops, path) => ops.find((op) => op.path[0] === path);
+const catalogMode = await host.request("POST", "contextWindowMode=catalog");
+const catalogOps = host.writes.at(-1);
+check("catalog mode clears the explicit window", setPath(catalogOps, "contextWindow")?.op === "unset");
+check("catalog mode clears the max flag", setPath(catalogOps, "useMaxContext")?.value === false);
 
-await host.request("POST", "token_global_clear=on");
+const maxMode = await host.request("POST", "contextWindowMode=max");
+const maxOps = host.writes.at(-1);
+check("max mode clears the explicit window", setPath(maxOps, "contextWindow")?.op === "unset");
+check("max mode sets the flag", setPath(maxOps, "useMaxContext")?.value === true);
+
+const customBlank = await host.request("POST", "contextWindowMode=custom&contextWindow=");
+check("custom mode without a number is refused", customBlank.status === 400, customBlank.status);
+
+await host.request("POST", "token_global_clear=on&contextWindowMode=catalog");
 check("clear removes the token", host.tokens.has("QODER_API_KEY") === false);
 
 const reloaded = await host.request("GET");

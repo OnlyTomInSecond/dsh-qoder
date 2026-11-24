@@ -542,6 +542,27 @@ export function contextWindowFromCatalog(entry: QoderModelEntry, settings: Qoder
   return DEFAULT_CONTEXT_WINDOW;
 }
 
+/**
+ * Every context tier the cached catalog advertises for one region, ascending.
+ *
+ * The configuration page offers these as the selectable windows, so the numbers
+ * a user picks from are the ones Qoder itself publishes rather than a guess. An
+ * empty answer means the catalog advertises no tiers at all, in which case the
+ * page offers a custom value only.
+ *
+ * @param mode - region whose catalog to read.
+ * @returns distinct advertised token counts, ascending.
+ */
+export function advertisedContextTiers(mode: QoderMode): number[] {
+  const store = getCatalogStore(mode);
+  const seen = new Set<number>();
+  for (const model of getCachedModels(mode)) {
+    const config = store.configs().get(model.id);
+    if (config) for (const tier of contextTiers(config)) seen.add(tier.tokens);
+  }
+  return [...seen].sort((a, b) => a - b);
+}
+
 export function isCacheStale(mode: QoderMode, userID?: string): boolean {
   const data = getCatalogStore(mode).read();
   if (!data || typeof data.updatedAt !== "number") return true;
