@@ -124,17 +124,20 @@ function replayFromEnv(env: Readonly<Record<string, string | undefined>>): Reaso
 }
 
 /**
- * Resolve every option for one operation.
+ * The options an environment variable overrides, already validated.
  *
- * Called per request (and per model-list read), so it must stay cheap: a few
- * reference reads and environment lookups, no I/O. A missing or invalid value
- * degrades to the default rather than failing the session, which is why the
- * environment reads use `0` / `-1` sentinels instead of throwing.
+ * Split out of {@link resolveQoderSettings} so the configuration page can show
+ * which knobs the launching environment has pinned: a value that comes from an
+ * env var outranks anything the page writes, so the page must not pretend its
+ * own input is in effect.
+ *
+ * A key is present only when the variable is set AND valid; the sentinels used
+ * for the numeric reads (`0` for "at least 1", `-1` for "at least 0") are
+ * filtered out here, so callers never have to know them.
  */
-export function resolveQoderSettings(
+export function qoderSettingsFromEnv(
   env: Readonly<Record<string, string | undefined>> = process.env,
-  config?: QoderConfigFields,
-): QoderSettings {
+): Partial<QoderSettings> {
   const window = readNumericOption("QODER_CONTEXT_WINDOW", env, 0, (value) => Number.isFinite(value) && value > 0);
   const output = readNumericOption(
     "QODER_MAX_OUTPUT_TOKENS",
@@ -157,15 +160,41 @@ export function resolveQoderSettings(
   // `QODER_DEBUG` keeps its historical "set it to anything non-empty" behavior;
   // the Config flag is an explicit boolean.
   const debug = env.QODER_DEBUG?.trim();
+  const replay = replayFromEnv(env);
 
   return {
-    contextWindow: window > 0 ? Math.round(window) : valueOf(config?.contextWindow),
-    useMaxContext: truthy(env.QODER_CONTEXT_MAX) || valueOf(config?.useMaxContext) === true,
-    maxOutputTokens: output > 0 ? output : (valueOf(config?.maxOutputTokens) ?? DEFAULT_MAX_OUTPUT_TOKENS),
-    replayReasoning: replayFromEnv(env) ?? valueOf(config?.replayReasoning) ?? "none",
-    streamIdleTimeoutMs: idle > 0 ? idle : (valueOf(config?.streamIdleTimeoutMs) ?? DEFAULT_STREAM_IDLE_TIMEOUT_MS),
-    streamDeltaIntervalMs: delta >= 0 ? delta : (valueOf(config?.streamDeltaIntervalMs) ?? DELTA_FLUSH_INTERVAL_MS),
-    debug: (debug !== undefined && debug !== "" && debug.toLowerCase() !== "0") || valueOf(config?.debug) === true,
+    ...(window > 0 ? { contextWindow: Math.round(window) } : {}),
+    ...(truthy(env.QODER_CONTEXT_MAX) ? { useMaxContext: true } : {}),
+    ...(output > 0 ? { maxOutputTokens: output } : {}),
+    ...(replay === undefined ? {} : { replayReasoning: replay }),
+    ...(idle > 0 ? { streamIdleTimeoutMs: idle } : {}),
+    ...(delta >= 0 ? { streamDeltaIntervalMs: delta } : {}),
+    ...(debug !== undefined && debug !== "" && debug.toLowerCase() !== "0" ? { debug: true } : {}),
+  };
+}
+
+/**
+ * Resolve every option for one operation.
+ *
+ * Called per request (and per model-list read), so it must stay cheap: a few
+ * reference reads and environment lookups, no I/O. A missing or invalid value
+ * degrades to the default rather than failing the session, which is why the
+ * environment half is read through {@link qoderSettingsFromEnv}, whose absent
+ * keys simply fall through to the Config field and then the default.
+ */
+export function resolveQoderSettings(
+  env: Readonly<Record<string, string | undefined>> = process.env,
+  config?: QoderConfigFields,
+): QoderSettings {
+  const fromEnv = qoderSettingsFromEnv(env);
+  return {
+    contextWindow: fromEnv.contextWindow ?? valueOf(config?.contextWindow),
+    useMaxContext: fromEnv.useMaxContext ?? valueOf(config?.useMaxContext) === true,
+    maxOutputTokens: fromEnv.maxOutputTokens ?? valueOf(config?.maxOutputTokens) ?? DEFAULT_MAX_OUTPUT_TOKENS,
+    replayReasoning: fromEnv.replayReasoning ?? valueOf(config?.replayReasoning) ?? "none",
+    streamIdleTimeoutMs: fromEnv.streamIdleTimeoutMs ?? valueOf(config?.streamIdleTimeoutMs) ?? DEFAULT_STREAM_IDLE_TIMEOUT_MS,
+    streamDeltaIntervalMs: fromEnv.streamDeltaIntervalMs ?? valueOf(config?.streamDeltaIntervalMs) ?? DELTA_FLUSH_INTERVAL_MS,
+    debug: fromEnv.debug ?? valueOf(config?.debug) === true,
   };
 }
 
