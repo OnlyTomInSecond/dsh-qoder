@@ -58,13 +58,27 @@ pnpm dsh plugin --profile web add /绝对路径/dsh-qoder
 - `dsh.profile.bundles` 末尾加入 `@local/dsh-llm-qoder`
 - 包内 `cordis.patch.yml` 插入 `llm-qoder` 行，同时注册 `qoder` 与 `qoder-cn` 两条路由
 
-### 3. 提供凭据
+### 3. 打开插件自带的设置页
 
-本插件**不修改 DSH 源码**，也不需要给 DSH 打任何补丁；凭据有两种给法。
+DSH 的 Models 页只为它内置的两类供应商（`llm-deepseek`、`llm-pi-ai`）渲染卡片；Qoder 的 profile 只有一个 `apiKeyEnv` 字段，在那些版本上 Add provider 只显示一行提示，**没有地方粘贴令牌**。本插件不去修改 DSH 的客户端代码，而是由 Host 侧自带的页面解决：
 
-**方式 A：Config + 环境变量**
+```
+http://<你的 DSH 地址>/qoder/settings
+```
 
-在 profile patch 里声明 provider profile，令牌由环境变量提供。这种方式不依赖 Models 页的编辑卡片，任何 DSH 版本都可用：
+页面提供：
+
+- **每个区域的访问令牌**（`Qoder` / `Qoder CN`），写入 DSH 凭据存储的 `QODER_API_KEY` / `QODER_CN_API_KEY` 引用，不落到配置文件；可覆盖或删除。
+- **上下文与额度选项**：上下文窗口、输出上限、思考回放、流空闲超时、增量合并间隔、`useMaxContext`、`debug`，与「配置」一节的字段一一对应。
+- 保存令牌时同时把 `providers.<region>` 写进插件 Config，所以保存后模型选择器立刻出现该区域的模型。
+
+实现是用 `ctx.webServer` 注册一条 Host 路由（`src/qoder-config-page.ts`），因此：
+
+- 只依赖 DSH 已有的 `webServer` / `settings` / `credentials` 三个服务，**不需要给 DSH 打补丁、也不需要构建任何客户端 bundle**；
+- 路由保持默认的 `auth: required`，未登录的请求拿不到页面，也不会看到令牌回显（页面只显示是否已配置）；
+- headless 或没有 `webServer` 的组合下，插件照常工作，只是没有这个页面。
+
+如果你更愿意用配置文件或环境变量：
 
 ```yaml
 - id: llm-qoder
@@ -79,18 +93,14 @@ pnpm dsh plugin --profile web add /绝对路径/dsh-qoder
 QODER_API_KEY=pt-... dsh web   # 或该安装的启动命令
 ```
 
-CN 区把 `qoder` / `QODER_API_KEY` 换成 `qoder-cn` / `QODER_CN_API_KEY`。
-
-**方式 B：Models 页（取决于你的 DSH 版本）**
-
-如果当前 DSH 的 Models 页能给「profile 只有 `apiKeyEnv` 一个字段」的未知供应商渲染输入卡片，就可以在 **Settings → Models → Add provider** 里选 `Qoder` / `Qoder CN` 并直接填令牌，令牌写入 DSH 凭据存储的 `QODER_API_KEY` / `QODER_CN_API_KEY` 引用。若该版本只会显示一行提示、无法输入 key，请改用方式 A —— 本插件不会为此改动 DSH。
+CN 区把 `qoder` / `QODER_API_KEY` 换成 `qoder-cn` / `QODER_CN_API_KEY`。环境变量的优先级高于页面写入的令牌，适合一次性运行。
 
 ### 4. 验证
 
-- 重启或刷新后，**Settings → Models → Add provider** 应出现 `Qoder` / `Qoder CN`。
-- 添加 token 后，模型选择器出现对应模型。
+- 打开 `/qoder/settings`：两个区域卡片都能填写令牌，保存后显示「已配置」和「已添加」。
+- 模型选择器出现对应模型（以 Qoder 实时目录为准）；首次可能先显示内置静态模型，后台刷新后替换。
 - 命令行检查 composed config：`dsh --profile web --dump-config | grep -A3 llm-qoder`
-- `~/.dsh/qoder/` 出现目录缓存，说明后台实时目录刷新成功（首次使用可能先显示内置静态模型）。
+- `~/.dsh/qoder/` 出现目录缓存，说明后台实时目录刷新成功。
 
 ### 5. 更新
 
@@ -117,13 +127,9 @@ plugin_manager(action="install_bundle", target="/绝对路径/dsh-qoder")
 
 只使用 DSH 自己的凭据体系，不读取 `~/.pi/` 或任何其他 Agent 的登录状态。
 
-**方式 A：Config + 环境变量（任何 DSH 版本都可用）**
+推荐用插件自带的 **`/qoder/settings`** 页面填写：令牌写入 DSH 凭据存储的 `QODER_API_KEY`（CN 为 `QODER_CN_API_KEY`）引用，不进入配置文件，保存后下一次请求立即生效，可随时覆盖或删除。
 
-在 profile patch 写入 provider profile，`apiKeyEnv` 指向环境变量名，令牌通过环境变量提供（见「从源码安装」第 3 节）。
-
-**方式 B：Models 页（取决于你的 DSH 版本）**
-
-如果当前版本的 Models 页能给未知供应商的 `{ apiKeyEnv }` profile 渲染输入卡片，可以直接在 **Settings → Models → Add provider** 里选 `Qoder` / `Qoder CN` 填写令牌并 Apply。令牌写入 DSH 凭据存储的 `QODER_API_KEY`（CN 为 `QODER_CN_API_KEY`）引用，不进入配置文件；保存后下一次请求立即生效，已添加的行可以 Edit 修改或用官方 Remove 删除（同时删除凭据引用）。该能力由 DSH 自身提供，本插件不修改 DSH 来换取它。
+也可以在 profile patch 里写 `providers.<region>.apiKeyEnv` 并用环境变量提供令牌（见「从源码安装」第 3 节）；环境变量优先级更高，适合一次性运行。
 
 也支持：
 
@@ -136,7 +142,7 @@ plugin_manager(action="install_bundle", target="/绝对路径/dsh-qoder")
 
 ## 使用
 
-Host 侧安装后立即生效。配置好凭据（见上一节的方式 A 或 B）后，模型选择器出现 `Qoder` / `Qoder CN` 的模型（以 Qoder 实时目录为准）。本插件只注册 Host 侧的 LLM 路由与模型元数据，不改动 DSH 的任何客户端代码。
+Host 侧安装后立即生效。打开 `/qoder/settings`（或按上一节用环境变量）配置令牌后，模型选择器出现 `Qoder` / `Qoder CN` 的模型（以 Qoder 实时目录为准）。本插件只注册 Host 侧的 LLM 路由、模型元数据和一块自带的设置页，不改动 DSH 的任何客户端代码。
 
 想把 Qoder 设为默认模型，在 profile patch 中覆盖：
 
@@ -194,6 +200,7 @@ Host 侧安装后立即生效。配置好凭据（见上一节的方式 A 或 B�
 | `src/qoder-credentials.ts` | DSH 凭据引用 / DSH 记录 / 环境变量的解析与刷新 |
 | `src/pi-context.ts` | DSH 消息与工具 → pi transcript |
 | `src/qoder/settings.ts` | Credit/流式选项：volatile Config schema + 每请求解析 |
+| `src/qoder-config-page.ts` | Host 侧自带设置页：`/qoder/settings`（令牌 + 额度选项） |
 | `src/stream-bridge.ts` | pi 事件 → DSH `StreamChunk` |
 | `src/qoder/` | 自包含的 Qoder 协议实现（含 `pi-ai.ts` 本地类型/辅助函数，无外部运行时依赖） |
 
@@ -201,8 +208,11 @@ Host 侧安装后立即生效。配置好凭据（见上一节的方式 A 或 B�
 
 ```bash
 node build.mjs
-node scripts/smoke.mjs                              # 实时目录
+node scripts/config-page-smoke.mjs                   # 设置页（离线，无需 DSH）
+node scripts/smoke.mjs                               # 实时目录
 QODER_API_KEY=... QODER_SMOKE_STREAM=1 node scripts/smoke.mjs  # 真实流式
 ```
+
+`scripts/config-page-smoke.mjs` 用假的 `webServer` / `settings` / `credentials` 驱动设置页，覆盖 GET、保存令牌、自动标记 provider、清空令牌、超限拒绝和「没有 webServer 时不注册」。
 
 模型目录、真实流式和 DSH `headless` 端到端均已验证。`headless` profile 默认不挂载 settings/credentials，因此流式冒烟需要显式传 `QODER_API_KEY`/`QODER_ACCESS_TOKEN`；这是 DSH 启动环境变量，不涉及 pi 配置。

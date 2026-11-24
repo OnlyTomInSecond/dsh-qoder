@@ -18,7 +18,8 @@
     "locale/*.json",
     "icon.svg",
     "README.md",
-    "scripts/smoke.mjs"
+    "scripts/smoke.mjs",
+    "scripts/config-page-smoke.mjs"
   ],
   "dsh": {
     "bundle": {
@@ -28,6 +29,7 @@
   "scripts": {
     "build": "node build.mjs",
     "smoke": "node scripts/smoke.mjs",
+    "smoke:config": "node scripts/config-page-smoke.mjs",
     "prepare": "npm run build"
   },
   "devDependencies": {

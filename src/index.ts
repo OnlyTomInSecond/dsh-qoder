@@ -15,6 +15,7 @@ import { streamQoder } from "./qoder/protocol/stream.js";
 import { QoderAuthError, QoderCredentialStore } from "./qoder-credentials.js";
 import { buildPiContext, prepareImages, type AttachmentBridge, type DshGenerateOptions, type HostBridge } from "./pi-context.js";
 import { bridgeStream, QoderStreamError } from "./stream-bridge.js";
+import { registerConfigPage } from "./qoder-config-page.js";
 
 export const name = "llm-qoder";
 export const inject = ["llm"];
@@ -72,6 +73,12 @@ const QODER_API = "qoder-api";
 const CATALOG_RETRY_MS = 5 * 60_000;
 
 const ATTRIBUTION = "deepseek-harness (+https://github.com/deepseek-ai/deepseek-harness)";
+
+/** Whether a route has been added to this plugin's Config; absent settings means headless. */
+function profileGate(ctx: LlmContext, providers: Config["providers"]) {
+  return (mode: QoderMode): boolean =>
+    ctx.get?.("settings") === undefined || providers?.get()?.[mode === "cn" ? "qoder-cn" : "qoder"] !== undefined;
+}
 const modeOf = (provider: string): QoderMode => (provider === "qoder-cn" ? "cn" : "global");
 
 function efforts(model: ReturnType<typeof getCachedModels>[number] | undefined) {
@@ -293,9 +300,16 @@ export function apply(ctx: LlmContext, rawConfig: unknown): void {
     new QoderAdapter(
       store,
       host,
-      (mode) => ctx.get?.("settings") === undefined
-        || providers?.get()?.[mode === "cn" ? "qoder-cn" : "qoder"] !== undefined,
+      profileGate(ctx, providers),
     ),
   );
+  // The Models page only renders a key field for the provider families DSH
+  // ships, so a Qoder profile would have nowhere to paste a token. Serve a
+  // page from this Host instead of asking anyone to patch DSH's client.
+  registerConfigPage(ctx, {
+    ns: settingsNs,
+    configured: profileGate(ctx, providers),
+    onCredentialsChanged: (mode) => store.invalidate(mode),
+  });
   debugLog(`registered Qoder routes: ${routes.join(", ")}`);
 }
