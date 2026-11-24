@@ -21,7 +21,9 @@ npm install
 npm run build
 ```
 
-`npm install` 安装构建期依赖，`npm run build` 生成 `index.js`。有 lockfile 时也可以用 `npm ci`。
+`npm install` 安装构建期依赖（`prepare` 会自动跑一次构建），`npm run build` 重新生成 `index.js`。有 lockfile 时也可以用 `npm ci`。
+
+`index.js` 是构建产物，**不在仓库里**：任何一次 `git pull` 或改动 `src/` 之后重跑 `npm run build` 即可。
 
 ### 2. 安装到 DSH profile
 

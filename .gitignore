@@ -1,3 +1,6 @@
 node_modules/
 *.log
 .DS_Store
+
+# esbuild bundle: built by `npm run build` (also runs on install via prepare)
+/index.js
