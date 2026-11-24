@@ -15,7 +15,6 @@ import { streamQoder } from "./qoder/protocol/stream.js";
 import { QoderAuthError, QoderCredentialStore } from "./qoder-credentials.js";
 import { buildPiContext, prepareImages, type AttachmentBridge, type DshGenerateOptions, type HostBridge } from "./pi-context.js";
 import { bridgeStream, QoderStreamError } from "./stream-bridge.js";
-import { registerConfigPage } from "./qoder-config-page.js";
 
 export const name = "llm-qoder";
 export const inject = ["llm"];
@@ -308,13 +307,5 @@ export function apply(ctx: LlmContext, rawConfig: unknown): void {
       profileGate(ctx, providers),
     ),
   );
-  // The Models page only renders a key field for the provider families DSH
-  // ships, so a Qoder profile would have nowhere to paste a token. Serve a
-  // page from this Host instead of asking anyone to patch DSH's client.
-  registerConfigPage(ctx, {
-    ns: settingsNs,
-    configured: profileGate(ctx, providers),
-    onCredentialsChanged: (mode) => store.invalidate(mode),
-  });
   debugLog(`registered Qoder routes: ${routes.join(", ")}`);
 }
