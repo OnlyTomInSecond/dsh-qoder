@@ -21,6 +21,7 @@ export type QoderLocaleKey =
   | "usage.stale"
   | "usage.used"
   | "usage.remaining"
+  | "usage.user"
   | "usage.addOn"
   | "usage.org"
   | "usage.expires"
@@ -80,6 +81,7 @@ export const zh: QoderLocaleDict = {
   "usage.stale": "刷新失败，显示上次成功读取的额度。",
   "usage.used": "已用 {used}",
   "usage.remaining": "剩余 {remaining}",
+  "usage.user": "个人",
   "usage.addOn": "加购",
   "usage.org": "组织资源包",
   "usage.expires": "{date} 到期",
@@ -137,6 +139,7 @@ export const en: QoderLocaleDict = {
   "usage.stale": "Refresh failed; showing the last successful account snapshot.",
   "usage.used": "{used} used",
   "usage.remaining": "{remaining} left",
+  "usage.user": "Personal",
   "usage.addOn": "Add-on",
   "usage.org": "Organization",
   "usage.expires": "Expires {date}",

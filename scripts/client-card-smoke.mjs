@@ -23,7 +23,9 @@ function check(label, condition, detail) {
 function element(type, props, ...children) {
   return { type, props: props ?? {}, children: children.flat() };
 }
-const React = { createElement: element };
+// Rendering calls the component directly, so an effect has no commit to wait
+// for: running it inline is the mount path this test exercises.
+const React = { createElement: element, useEffect: (effect) => { effect(); } };
 
 /* ---- the bundle, loaded like the shell loads it ------------------------ */
 
@@ -158,7 +160,7 @@ check("the registration injects the card face", face !== undefined && typeof fac
 check("the face exposes the snapshot hook", face !== undefined && face.hooks !== undefined && face.hooks.qoderCard !== undefined);
 check("the snapshot hook is not called as a function type twice", typeof face?.hooks?.qoderCard.getSnapshot === "function");
 // Activating the client half is not someone opening the card: the balance is
-// read on the first render, not at mount.
+// read on the first page render, not at mount.
 await (async () => { for (let i = 0; i < 3; i += 1) await new Promise((resolve) => setTimeout(resolve)); })();
 check("activating the client half reads no quota", quotaFetch.calls.length === 0, JSON.stringify(quotaFetch.calls));
 
@@ -189,9 +191,29 @@ check("summary renders one line", typeof render("summary") === "object" && rende
 /** Let the deferred first read and its snapshot publication settle. */
 const settle = async () => { for (let i = 0; i < 5; i += 1) await new Promise((resolve) => setTimeout(resolve)); };
 
-// The first render reads the balance, from the Host's own route.
+// A summary render is the bundle's row one-liner, not someone opening the card:
+// it must not read the balance.
 await settle();
-check("the card reads the quota route", quotaFetch.calls[0] === "qoder/quota", JSON.stringify(quotaFetch.calls));
+check("a summary render reads no quota", quotaFetch.calls.length === 0, JSON.stringify(quotaFetch.calls));
+
+// Opening the page does read it, from the Host's own route.
+render("page");
+await settle();
+check("the page reads the quota route", quotaFetch.calls[0] === "qoder/quota", JSON.stringify(quotaFetch.calls));
+// The gap between the first commit and the effect that starts the read is not a
+// fact about the account: it must not claim the regions have no token.
+const idleQuota = { status: "idle", regions: [], busy: false };
+const idleTree = walk(cardRegistration.component({
+  view: "page",
+  ...face,
+  // Only the quota block is idle here: the rest of the snapshot stays real, so
+  // the token rows still render and the assertion is about the quota block.
+  useQoderCard: (selector) => selector({ ...face.hooks.qoderCard.getSnapshot(), quota: idleQuota }),
+}));
+const idleTexts = idleTree.filter((node) => node.type === "p")
+  .map((node) => node.children.filter((child) => typeof child === "string").join(""));
+check("an idle read renders as loading, not as an unconfigured region",
+  idleTexts.some((text) => text.includes("Reading quota")), JSON.stringify(idleTexts));
 check("a missing route reports the deployment as unserved",
   face.hooks.qoderCard.getSnapshot().quota.status === "unserved",
   JSON.stringify(face.hooks.qoderCard.getSnapshot().quota));
@@ -220,6 +242,39 @@ const quotaText = JSON.stringify(quotaNodes);
 check("the balance shows the used/total split", quotaText.includes("127.5/1,000"), quotaText);
 check("the balance shows what is left, with its unit", quotaText.includes("872.5 credits"), quotaText);
 check("a region without a token says so", quotaText.includes("no access token"), quotaText);
+check("the leading balance names its bucket", quotaText.includes("Personal · 127.5/1,000"), quotaText);
+
+// An enterprise plan reports only an organization resource package, and that is
+// the only balance the person can act on: it must be the prominent line, not a
+// muted footnote under a missing personal quota.
+const enterprise = walk(cardRegistration.component({
+  view: "page",
+  ...face,
+  useQoderCard: (selector) => selector({
+    ...face.hooks.qoderCard.getSnapshot(),
+    quota: {
+      status: "ready",
+      busy: false,
+      regions: [{
+        mode: "global", configured: true, quota: {
+          status: "fresh", updatedAt: 1,
+          snapshot: {
+            orgResourcePackage: { total: 3558, used: 21, remaining: 3537, unit: "credits" },
+            expiresAt: 1796054400000,
+          },
+        },
+      }],
+    },
+  }),
+}));
+const enterpriseRow = enterprise.find((node) => node.props?.["data-qoder-quota"] === "global");
+// The row's own <p> is the region title, so the body lines start at the second.
+const enterpriseLines = walk(enterpriseRow).filter((node) => node.type === "p").slice(1)
+  .map((node) => node.children.join(""));
+check("an organization-only account leads with its package",
+  enterpriseLines[0]?.includes("Organization · 21/3,558"), JSON.stringify(enterpriseLines));
+check("an organization-only account never claims an unavailable quota",
+  !enterpriseLines.some((text) => text.includes("Quota unavailable")), JSON.stringify(enterpriseLines));
 check("the block states the figure is account-wide",
   JSON.stringify(walk(render("page"))).includes("Account-wide period totals"));
 const refreshButton = walk(render("page")).find((node) => node.type === "button" && JSON.stringify(node.children).includes("Refresh"));

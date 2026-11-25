@@ -43,6 +43,7 @@ import {
   type TokenState,
   type WindowMode,
 } from "./form.js";
+import type { QoderQuotaBucket } from "../qoder/quota-shared.js";
 import { en, zh, type QoderLocaleDict, type QoderLocaleKey } from "./locales.js";
 import { formatCredit, quotaRows, QoderQuotaCard } from "./quota.js";
 
@@ -72,6 +73,8 @@ type Translate = (key: QoderLocaleKey, params?: Record<string, unknown>) => stri
 
 interface ReactLike {
   createElement(type: unknown, props?: Record<string, unknown> | null, ...children: unknown[]): Element;
+  /** Run an effect after the commit; an empty dependency list runs it once per mount. */
+  useEffect(effect: () => void, dependencies?: readonly unknown[]): void;
 }
 
 /** The Remote answer envelope (`RemoteResult`), structurally. */
@@ -194,9 +197,12 @@ function QoderConfigCard(props: CardProps): Element {
   const h = React.createElement;
   const { t } = props;
   const state: QoderCardState = props.useQoderCard((snapshot: QoderCardState) => snapshot);
-  // The first balance read happens when the card is actually shown, not when
-  // the bundle's client half activates; the controller makes it idempotent.
-  props.ensureQuotaRead();
+  // The first balance read is an effect, not render work: it happens when the
+  // card is actually committed to the page rather than when the bundle's client
+  // half activates, and the controller makes it idempotent across remounts. The
+  // view gate keeps a summary render — the row's one-liner — from reading the
+  // quota before anyone opened the page.
+  React.useEffect(() => { if (props.view === "page") props.ensureQuotaRead(); }, [props.view]);
 
   if (props.view === "summary") return h("span", null, t("summary"));
 
@@ -338,16 +344,24 @@ function QoderConfigCard(props: CardProps): Element {
         body = h("p", { style: styles.hint },
           quota.busy ? t("usage.loading") : t("usage.unavailable"));
       } else {
+        // Which bucket leads depends on the plan: a personal plan reports
+        // `userQuota`, while an enterprise one reports only an organization
+        // resource package. The balance a person came for is whichever bucket
+        // the account actually has, so the first present one gets the prominent
+        // line and is always named — the number means something different
+        // depending on which bucket it came from.
+        const buckets = [
+          { label: t("usage.user"), bucket: snapshot.userQuota },
+          { label: t("usage.org"), bucket: snapshot.orgResourcePackage },
+          { label: t("usage.addOn"), bucket: snapshot.addOnQuota },
+        ].filter((entry): entry is { label: string; bucket: QoderQuotaBucket } => entry.bucket !== undefined);
         body = h(
           "div",
           { style: styles.section },
-          ...(snapshot.userQuota === undefined ? [] : [h("p", { style: styles.row }, bucketLine(snapshot.userQuota))]),
-          ...(snapshot.addOnQuota === undefined
-            ? []
-            : [h("p", { style: styles.hint }, `${t("usage.addOn")} · ${bucketLine(snapshot.addOnQuota)}`)]),
-          ...(snapshot.orgResourcePackage === undefined
-            ? []
-            : [h("p", { style: styles.hint }, `${t("usage.org")} · ${bucketLine(snapshot.orgResourcePackage)}`)]),
+          ...(buckets[0] === undefined
+            ? [h("p", { style: styles.hint }, t("usage.unavailable"))]
+            : [h("p", { style: styles.row }, `${buckets[0].label} · ${bucketLine(buckets[0].bucket)}`)]),
+          ...buckets.slice(1).map((entry) => h("p", { style: styles.hint }, `${entry.label} · ${bucketLine(entry.bucket)}`)),
           ...(snapshot.expiresAt === undefined
             ? []
             : [h("p", { style: styles.hint }, t("usage.expires", {
@@ -371,9 +385,11 @@ function QoderConfigCard(props: CardProps): Element {
       ? [h("p", { style: styles.hint }, t("usage.unread"))]
       : [
         h("p", { style: styles.hint }, t("usage.hint")),
-        // Before the first answer there are no regions yet, so the rows would
-        // read "no token" — which is exactly what a configured region is not.
-        ...(quota.regions.length === 0 && quota.busy
+        // Before the first answer there are no regions yet, so every row would
+        // read "no token" — which is what a configured region is not. `idle` is
+        // the moment between the first commit and the effect that starts the
+        // read, and it is not a fact about the account.
+        ...(quota.regions.length === 0 && (quota.busy || quota.status === "idle")
           ? [h("p", { style: styles.hint }, t("usage.loading"))]
           : rows.map(regionRow)),
       ];
