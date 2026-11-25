@@ -71,10 +71,7 @@ export class QoderCredentialStore {
   private readonly memory = new Map<QoderMode, QoderCredentials>();
   private readonly inflight = new Map<QoderMode, Promise<QoderCredentials>>();
 
-  constructor(
-    private readonly ctx: PluginContext,
-    private readonly persist: boolean,
-  ) {}
+  constructor(private readonly ctx: PluginContext) {}
 
   /** Drop the in-memory credential after the user changes its reference. */
   invalidate(mode: QoderMode): void {
@@ -149,7 +146,7 @@ export class QoderCredentialStore {
           const refreshed = (await refreshQoderTokenForMode(stored, mode)) as QoderCredentials;
           rememberQoderCredential(providerID, refreshed);
           this.memory.set(mode, refreshed);
-          if (this.persist) await this.writeRecord(mode, refreshed);
+          await this.writeRecord(mode, refreshed);
           return refreshed;
         } catch (error) {
           if (token?.kind !== "pat") {
@@ -177,12 +174,12 @@ export class QoderCredentialStore {
       }
       rememberQoderCredential(providerID, credentials);
       this.memory.set(mode, credentials);
-      if (this.persist) await this.writeRecord(mode, credentials);
+      await this.writeRecord(mode, credentials);
       return credentials;
     }
 
     throw new QoderAuthError(
-      `No Qoder credentials for ${providerID}. Paste an access token in Settings > Models > Qoder,`
+      `No Qoder credentials for ${providerID}. Paste an access token in Plugins > Qoder,`
       + ` or set ${region.patEnvNames[0]}.`,
     );
   }
