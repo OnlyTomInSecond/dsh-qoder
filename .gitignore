@@ -4,5 +4,8 @@ node_modules/
 
 # Build artifacts: `npm run build` (also runs on install via prepare) writes
 # the Host bundle and the browser bundle DSH's client module system serves.
+# Each artifact is built beside its destination and renamed into place, so a
+# build that dies part-way can leave the temporary file behind.
 /index.js
+/index.js.tmp-*
 /lib/
