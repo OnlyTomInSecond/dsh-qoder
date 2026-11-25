@@ -131,8 +131,8 @@ export function streamQoder(
       if (!accessToken) {
         throw new Error(
           providerMode === "cn"
-            ? "Qoder CN credentials not set. Paste an access token in DSH Settings > Models > Qoder CN."
-            : "Qoder credentials not set. Paste an access token in DSH Settings > Models > Qoder.",
+            ? "Qoder CN credentials not set. Paste an access token on its card in Plugins > Qoder."
+            : "Qoder credentials not set. Paste an access token on its card in Plugins > Qoder.",
         );
       }
 

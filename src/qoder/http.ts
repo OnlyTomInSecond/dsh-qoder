@@ -48,7 +48,7 @@ export async function readResponseText(response: Response, signal: AbortSignal):
 export class QoderHttpError extends Error {
   constructor(public readonly status: number, public readonly body = "") {
     super(`Qoder HTTP ${status}${body ? `: ${body}` : ""}`
-      + (status === 401 || status === 403 ? ": credentials rejected; paste a new token in Settings > Models" : ""));
+      + (status === 401 || status === 403 ? ": credentials rejected; paste a new token in Plugins > Qoder" : ""));
   }
 }
 
