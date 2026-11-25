@@ -67,7 +67,7 @@ export type QoderLocaleKey =
 export type QoderLocaleDict = Record<QoderLocaleKey, string>;
 
 export const zh: QoderLocaleDict = {
-  summary: "访问令牌、上下文窗口、输出上限与流式选项。",
+  summary: "访问令牌、本期额度、上下文窗口、输出上限与流式选项。",
   "section.tokens": "访问令牌",
   "section.window": "上下文窗口",
   "section.quota": "额度与流式",
@@ -124,7 +124,7 @@ export const zh: QoderLocaleDict = {
 };
 
 export const en: QoderLocaleDict = {
-  summary: "Access tokens, context window, output cap, and stream options.",
+  summary: "Access tokens, account quota, context window, output cap, and stream options.",
   "section.tokens": "Access tokens",
   "section.window": "Context window",
   "section.quota": "Limits and streaming",
