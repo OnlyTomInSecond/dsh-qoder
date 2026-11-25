@@ -20,8 +20,13 @@ import type { QoderMode } from "../qoder/region.js";
 
 /** What the card renders for the quota block. */
 export interface QoderQuotaState {
-  /** `idle` before the first read, then the outcome of the latest one. */
-  status: "idle" | "loading" | "ready" | "unavailable";
+  /**
+   * `idle` before the first read, `loading` while one is in flight, `ready`
+   * once a balance is shown, `unavailable` when the last read failed, and
+   * `unserved` when this card was given no source at all (a deployment whose
+   * Host serves no route).
+   */
+  status: "idle" | "loading" | "ready" | "unavailable" | "unserved";
   /** One entry per region, in the Host's order; empty until the first answer. */
   regions: readonly QoderQuotaRegion[];
   /** Whether a read is in flight, including one started by a save. */
@@ -106,6 +111,15 @@ export class QoderQuotaCard implements QoderQuotaFace {
   private async read(url: string): Promise<void> {
     try {
       const response = await this.fetcher(url, { headers: { accept: "application/json" } });
+      // A deployment whose Host registers no route answers 404, and that is a
+      // different fact from a refused read: this card can never show a balance
+      // here, so the block says that instead of offering a retry that cannot
+      // succeed.
+      if (response.status === 404) {
+        if (this.disposed) return;
+        this.publish({ status: "unserved", regions: [], busy: false });
+        return;
+      }
       if (!response.ok) throw new Error(`quota read failed: HTTP ${String(response.status)}`);
       const payload = parsePayload(await response.json());
       if (this.disposed) return;

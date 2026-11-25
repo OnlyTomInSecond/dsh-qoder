@@ -331,7 +331,7 @@ function QoderConfigCard(props: CardProps): Element {
         body = h("p", { style: styles.hint }, t("usage.noToken"));
       } else if (snapshot === undefined) {
         body = h("p", { style: styles.hint },
-          quota.busy ? t("usage.loading") : quota.status === "unavailable" ? t("usage.unread") : t("usage.unavailable"));
+          quota.busy ? t("usage.loading") : t("usage.unavailable"));
       } else {
         body = h(
           "div",
@@ -358,6 +358,18 @@ function QoderConfigCard(props: CardProps): Element {
         body,
       );
     };
+    // A deployment whose Host serves no route can never show a number here, so
+    // it gets one sentence instead of rows that would each claim "no token".
+    const body = quota.status === "unserved"
+      ? [h("p", { style: styles.hint }, t("usage.unread"))]
+      : [
+        h("p", { style: styles.hint }, t("usage.hint")),
+        // Before the first answer there are no regions yet, so the rows would
+        // read "no token" — which is exactly what a configured region is not.
+        ...(quota.regions.length === 0 && quota.busy
+          ? [h("p", { style: styles.hint }, t("usage.loading"))]
+          : rows.map(regionRow)),
+      ];
     return h(
       "div",
       { style: styles.section },
@@ -366,11 +378,10 @@ function QoderConfigCard(props: CardProps): Element {
         h("button", {
           type: "button",
           style: { ...styles.button, ...(quota.busy ? styles.buttonDisabled : {}) },
-          disabled: quota.busy,
+          disabled: quota.busy || quota.status === "unserved",
           onClick: () => { void props.refreshQuota(true); },
         }, quota.busy ? t("usage.loading") : t("usage.refresh"))),
-      h("p", { style: styles.hint }, t("usage.hint")),
-      ...rows.map(regionRow),
+      ...body,
     );
   }
 

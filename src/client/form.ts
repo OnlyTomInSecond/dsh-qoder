@@ -613,7 +613,7 @@ export class QoderCardController implements QoderCardActions {
       tokensWritable: Object.values(this.tokens).some((token) => token.writable),
       // Without a source this deployment serves no quota route, which the
       // block states instead of pretending the account has no credits.
-      quota: this.options.quota?.getSnapshot() ?? { status: "unavailable", regions: [], busy: false },
+      quota: this.options.quota?.getSnapshot() ?? { status: "unserved", regions: [], busy: false },
     };
   }
 }
