@@ -14,6 +14,7 @@ import { bindQoderSettings, currentQoderSettings, type QoderConfigFields, qoderS
 import { streamQoder } from "./qoder/protocol/stream.js";
 import { QoderAuthError, QoderCredentialStore } from "./qoder-credentials.js";
 import { buildPiContext, prepareImages, type AttachmentBridge, type DshGenerateOptions, type HostBridge } from "./pi-context.js";
+import { registerQuotaRoute, type QuotaRoute, type WebServerLike } from "./quota-route.js";
 import { bridgeStream, QoderStreamError } from "./stream-bridge.js";
 
 export const name = "llm-qoder";
@@ -27,8 +28,9 @@ export const inject = ["llm"];
 // defaults and bounds.
 export const Config = z.object({ ...qoderSettingsFields });
 
-interface SettingsChild {
+interface PluginChild {
   settings?: { configure(policy: { auto?: boolean }, owner?: unknown): () => void };
+  webServer?: WebServerLike;
   effect?(callback: () => unknown, label?: string): unknown;
 }
 
@@ -37,7 +39,7 @@ interface LlmContext {
     registerAdapter(providers: string[], adapter: unknown): unknown;
   };
   get?(service: string): unknown;
-  inject?(deps: string[], callback: (child: SettingsChild) => unknown): unknown;
+  inject?(deps: string[], callback: (child: PluginChild) => unknown): unknown;
   on?(event: string, listener: (ref: string) => void): unknown;
   fiber?: { entry?: { options?: { id?: string } } };
 }
@@ -240,9 +242,24 @@ export function apply(ctx: LlmContext, rawConfig: unknown): void {
   // fields here is what makes a plugin-page edit reach the next request.
   bindQoderSettings(config);
   const store = new QoderCredentialStore(ctx);
+  // The card's quota read. Injected rather than read once with `ctx.get`, so a
+  // composition that mounts the web server after this plugin still gets the
+  // route; a deployment without one (headless, SDK, ACP) serves nothing and the
+  // card reports quota as unavailable.
+  let quotaRoute: QuotaRoute | undefined;
+  ctx.inject?.(["webServer"], (child) => {
+    quotaRoute = registerQuotaRoute(child.webServer, store);
+    child.effect?.(() => () => { quotaRoute?.dispose(); quotaRoute = undefined; }, "llm-qoder: quota route");
+  });
   ctx.on?.("credentials/reference-updated", (ref) => {
-    if (ref === "QODER_ACCESS_TOKEN" || ref === "QODER_API_KEY") store.invalidate("global");
-    if (ref === "QODERCN_ACCESS_TOKEN" || ref === "QODER_CN_API_KEY" || ref === "QODERCN_API_KEY") store.invalidate("cn");
+    if (ref === "QODER_ACCESS_TOKEN" || ref === "QODER_API_KEY") {
+      store.invalidate("global");
+      quotaRoute?.invalidate("global");
+    }
+    if (ref === "QODERCN_ACCESS_TOKEN" || ref === "QODER_CN_API_KEY" || ref === "QODERCN_API_KEY") {
+      store.invalidate("cn");
+      quotaRoute?.invalidate("cn");
+    }
   });
   // The entry id is the settings namespace the plugin page binds its form to;
   // deriving it keeps a renamed or re-inserted entry addressable, as llm-pi-ai
