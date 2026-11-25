@@ -73,7 +73,12 @@ const CATALOG_RETRY_MS = 5 * 60_000;
 
 const ATTRIBUTION = "deepseek-harness (+https://github.com/deepseek-ai/deepseek-harness)";
 
-/** Whether the Models page should treat a route as added: its profile exists. */
+/**
+ * Whether the Models page treats a route as added: its profile entry exists.
+ *
+ * Without the settings service (headless) there is no profile to add, so the
+ * gate stands open and a token or the environment is the whole configuration.
+ */
 function profileGate(ctx: LlmContext, providers: Config["providers"]) {
   return (mode: QoderMode): boolean =>
     ctx.get?.("settings") === undefined || providers?.get()?.[mode === "cn" ? "qoder-cn" : "qoder"] !== undefined;
@@ -126,7 +131,7 @@ class QoderAdapter {
   constructor(
     private readonly store: QoderCredentialStore,
     private readonly host: HostBridge,
-    private readonly configured: (mode: QoderMode) => boolean,
+    private readonly profilesAdded: (mode: QoderMode) => boolean,
   ) {}
 
   providerInfo(provider: string) {
@@ -209,8 +214,15 @@ class QoderAdapter {
 
   private async *generate(options: DshGenerateOptions) {
     const mode = modeOf(options.provider);
-    if (!this.configured(mode)) {
-      throw new QoderAuthError("Qoder provider is not added. Add it in Settings > Models.", "QODER_NOT_CONFIGURED");
+    // Either half of the configuration is enough: a profile added on the
+    // Models page needs its token, and a token from the credential seam or the
+    // launching environment needs no profile entry at all (which is the whole
+    // one-shot `QODER_API_KEY=… dsh web` path).
+    if (!this.profilesAdded(mode) && !(await this.store.hasToken(mode))) {
+      throw new QoderAuthError(
+        "Qoder provider is not configured. Paste a token on its card in Plugins, or set QODER_API_KEY.",
+        "QODER_NOT_CONFIGURED",
+      );
     }
     try {
       this.refreshCatalog(mode);

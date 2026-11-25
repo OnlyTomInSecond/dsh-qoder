@@ -1,6 +1,23 @@
 import z from "@deepseek-ai/schemastery";
 import { DELTA_FLUSH_INTERVAL_MS } from "./protocol/delta-coalescer.js";
+import {
+  DEFAULT_MAX_OUTPUT_TOKENS,
+  DEFAULT_STREAM_IDLE_TIMEOUT_MS,
+  MAX_OUTPUT_TOKENS_LIMIT,
+  MAX_STREAM_DELTA_MS,
+  MAX_STREAM_TIMEOUT_MS,
+} from "./limits.js";
 import { readNumericOption } from "./util.js";
+
+// The bounds and defaults live in `limits.ts`; they are re-exported here so the
+// Host plugin keeps one import for its schema and its resolution logic.
+export {
+  DEFAULT_MAX_OUTPUT_TOKENS,
+  DEFAULT_STREAM_IDLE_TIMEOUT_MS,
+  MAX_OUTPUT_TOKENS_LIMIT,
+  MAX_STREAM_DELTA_MS,
+  MAX_STREAM_TIMEOUT_MS,
+};
 
 /**
  * How much prior assistant thinking is replayed into the next request.
@@ -36,24 +53,6 @@ export interface QoderSettings {
   /** Verbose diagnostics for best-effort failures. */
   debug: boolean;
 }
-
-/** Default stream idle timeout (also the `QODER_STREAM_IDLE_TIMEOUT_MS` fallback). */
-export const DEFAULT_STREAM_IDLE_TIMEOUT_MS = 120_000;
-
-/** Upper bound for user-supplied timeouts, so a typo cannot hang a session. */
-const MAX_STREAM_TIMEOUT_MS = 3_600_000;
-const MAX_STREAM_DELTA_MS = 60_000;
-
-/**
- * Upstream maximum output length. Aliyun Model Studio (the upstream behind
- * Qoder's CN catalog) documents 131072 for every exposed model in both normal
- * and thinking mode; the Qoder catalog publishes no per-model output cap, so
- * this ceiling bounds the configurable cap.
- */
-export const MAX_OUTPUT_TOKENS_LIMIT = 131_072;
-
-/** qodercli-compatible per-request output cap; a bigger one only costs more. */
-export const DEFAULT_MAX_OUTPUT_TOKENS = 32_768;
 
 const REASONING_REPLAY_VALUES: readonly ReasoningReplay[] = ["none", "last", "all"];
 
