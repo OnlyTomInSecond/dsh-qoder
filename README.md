@@ -60,16 +60,13 @@ pnpm dsh plugin --profile web add /绝对路径/dsh-qoder
 
 ### 3. 在 Plugins 页配置
 
-DSH 的 Models 页只为它内置的两类供应商（`llm-deepseek`、`llm-pi-ai`）渲染卡片；Qoder 的 profile 只有一个 `apiKeyEnv` 字段，在那些版本上 Add provider 只显示一行提示，**没有地方粘贴令牌**。
-
-本插件把配置做成 **DSH 原生的插件配置页**，而不是另开一个 Web UI：打开 **Plugins → `@local/dsh-llm-qoder`**，正文里就是这张卡片。这是 DSH 为「bundle 自己的配置」预留的位置（`plugins.bundle.config` 槽位），和其他插件（终端、Web 搜索等）的配置页完全一致。
+本插件**不会**在 Models 页登记 Qoder 供应商条目：它不声明 configurable provider，所以 Models 页里既没有 Qoder 的「添加供应商」入口，也没有它的卡片。所有配置都在 **DSH 原生的插件配置页** 里完成：打开 **Plugins → `@local/dsh-llm-qoder`**，正文里就是这张卡片。这是 DSH 为「bundle 自己的配置」预留的位置（`plugins.bundle.config` 槽位），和其他插件（终端、Web 搜索等）的配置页完全一致。
 
 卡片提供：
 
-- **每个区域的访问令牌**（`Qoder` / `Qoder CN`），写入 DSH 凭据存储的 `QODER_API_KEY` / `QODER_CN_API_KEY` 引用，不落到配置文件；留空表示不修改，页面只显示「已配置」而从不回显令牌。
+- **每个区域的访问令牌**（`Qoder` / `Qoder CN`），写入 DSH 凭据存储的 `QODER_API_KEY` / `QODER_CN_API_KEY` 引用，不落到配置文件；留空表示不修改，页面只显示「已配置」而从不回显令牌。保存令牌即可让该区域的模型出现在模型选择器里——模型列表跟随**令牌**，不再需要任何「添加供应商」步骤。
 - **上下文窗口三选一**：目录默认档 / 目录最大档 / 自定义，与 pi 插件的 `/qoder-settings context <default|max|tokens>` 同一套语义。显式值超过目录公布的最大档会被夹到该档（上游不接受更大的窗口）。
 - **其余额度选项**：输出上限、思考回放、流空闲超时、增量合并间隔、`debug`，与「配置」一节的字段一一对应。
-- 保存令牌时同时把 `providers.<region>` 写进插件 Config，所以保存后模型选择器立刻出现该区域的模型。
 
 实现要点：
 
@@ -81,27 +78,18 @@ DSH 的 Models 页只为它内置的两类供应商（`llm-deepseek`、`llm-pi-a
 - 卡片文案走客户端 locale 服务（命名空间 `llmQoder`，内置中英两套），跟随界面语言，不在代码里硬编码中文。
 - 页面正文只放这张卡片：长描述来自 `locale/*.json` 的 `meta.detail`，指向 `docs/plugin-page.md`，不再把整份 README 摆到插件页上。
 
-也可以完全不用界面，直接写 profile patch 并用环境变量提供令牌：
-
-```yaml
-- id: llm-qoder
-  name: '@local/dsh-llm-qoder'
-  config:
-    providers:
-      qoder:
-        apiKeyEnv: QODER_API_KEY
-```
+也可以完全不用界面，仅用环境变量提供令牌：
 
 ```bash
 QODER_API_KEY=pt-... dsh web   # 或该安装的启动命令
 ```
 
-CN 区把 `qoder` / `QODER_API_KEY` 换成 `qoder-cn` / `QODER_CN_API_KEY`。环境变量的优先级高于配置页写入的令牌，适合一次性运行。
+CN 区改用 `QODERCN_API_KEY`。环境变量的优先级高于配置页写入的令牌，适合一次性运行。
 
 ### 4. 验证
 
 - **Plugins → `@local/dsh-llm-qoder`** 里两个区域都能填写令牌，保存后显示「已配置」。
-- 保存令牌后，模型选择器立即出现该区域的模型——模型列表跟随**令牌**，不依赖 profile 条目是否已写入。
+- 保存令牌后，模型选择器立即出现该区域的模型——模型列表跟随**令牌**，与 Models 页无关。
 - 模型选择器出现对应模型（以 Qoder 实时目录为准）；首次可能先显示内置静态模型，后台刷新后替换。
 - 命令行检查 composed config：`dsh --profile web --dump-config | grep -A3 llm-qoder`
 - `~/.dsh/qoder/` 出现目录缓存，说明后台实时目录刷新成功。
@@ -133,7 +121,7 @@ plugin_manager(action="install_bundle", target="/绝对路径/dsh-qoder")
 
 推荐用 **Plugins → `@local/dsh-llm-qoder`** 里的配置卡片填写：令牌写入 DSH 凭据存储的 `QODER_API_KEY`（CN 为 `QODER_CN_API_KEY`）引用，不进入配置文件，保存后下一次请求立即生效，可随时覆盖。
 
-也可以在 profile patch 里写 `providers.<region>.apiKeyEnv` 并用环境变量提供令牌（见「从源码安装」第 3 节）；环境变量优先级更高，适合一次性运行。
+也可以在启动环境里提供令牌（见「从源码安装」第 3 节）；环境变量优先级更高，适合一次性运行。
 
 也支持：
 
@@ -160,12 +148,7 @@ Host 侧安装后立即生效。在 **Plugins → `@local/dsh-llm-qoder`** 里�
 
 ## 配置
 
-```yaml
-- id: llm-qoder
-  name: '@local/dsh-llm-qoder'
-  config:
-    persistCredentials: true   # 刷新后的凭据写入 DSH 凭据记录
-```
+所有配置项都在 **Plugins → `@local/dsh-llm-qoder`** 的卡片里；也可以用 profile patch 直接写同名字段。
 
 ### 额度与流式选项
 
@@ -194,7 +177,7 @@ Host 侧安装后立即生效。在 **Plugins → `@local/dsh-llm-qoder`** 里�
 | 环境变量 | `QODER_*` | `QODERCN_*` |
 | 模型目录缓存 | `$DSH_HOME/qoder/qoder-models-cache.json` | `$DSH_HOME/qoder/qoder-cn-models-cache.json` |
 
-两者是**独立账号、独立额度、独立模型目录**，因此必须作为两条 provider 路由存在；这与 pi 插件的做法一致。区别只在区域配置和凭据，适配层与协议实现完全共用。两条路由始终注册，是否使用由是否配置了对应 profile 与凭据决定。
+两者是**独立账号、独立额度、独立模型目录**，因此必须作为两条 provider 路由存在；这与 pi 插件的做法一致。区别只在区域配置和凭据，适配层与协议实现完全共用。两条路由始终注册，是否使用只看该区域是否存了令牌。
 
 ## 实现结构
 
@@ -222,7 +205,7 @@ node scripts/smoke.mjs                               # 实时目录（需要令�
 QODER_API_KEY=... QODER_SMOKE_STREAM=1 node scripts/smoke.mjs  # 真实流式
 ```
 
-`scripts/config-card-smoke.mjs` 驱动配置卡片背后的纯逻辑（三种窗口模式、超限拒绝、零值增量间隔、只写真正改动的字段、令牌与 profile 写入），并用假服务验证「模型列表跟随令牌而非 profile 条目」。
+`scripts/config-card-smoke.mjs` 驱动配置卡片背后的纯逻辑（三种窗口模式、超限拒绝、零值增量间隔、只写真正改动的字段、令牌写入），并用假服务验证「模型列表跟随令牌而非任何供应商条目」。
 
 `scripts/client-card-smoke.mjs` 按 DSH 客户端模块系统的方式装载 `lib/client.js`（`window.__ModuleLoader__.load` + 注入的 `require`），把 `react`、`ctx.slots`、`ctx.configForms`、`ctx.remote.credentials`、`ctx.locale` 换成假服务，再渲染卡片并点击保存。它守住三件曾经坏掉的事：卡片能拿到插件的 Config 表单、令牌输入可写并真的写入凭据、被拒绝的 `RemoteResult` 会显示成错误而不是静默成功。
 
