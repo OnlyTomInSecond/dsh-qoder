@@ -145,7 +145,18 @@ check("a failed refresh is not cached as fresh", fetchCalls > callsAfterFirst + 
 const res = response();
 await route.handler({ method: "POST", url: "/qoder/quota", headers: {} }, res);
 check("a write is refused with 405", res.statusCode === 405, String(res.statusCode));
-check("the refusal names the only method", res.headers.allow === "GET", String(res.headers.allow));
+check("the refusal names the readable methods", res.headers.allow === "GET, HEAD", String(res.headers.allow));
+
+// HEAD answers without a body so a plain readability check works.
+const head = {
+  statusCode: 200,
+  headers: {},
+  body: "",
+  setHeader(name, value) { this.headers[name] = value; },
+  end(body) { if (body !== undefined) this.body = String(body); },
+};
+await route.handler({ method: "HEAD", url: "/qoder/quota", headers: {} }, head);
+check("HEAD is answered", head.statusCode === 200, String(head.statusCode));
 
 /* ---- a deployment without a web server keeps working -------------------- */
 

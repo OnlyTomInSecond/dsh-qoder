@@ -87,9 +87,11 @@ export function registerQuotaRoute(webServer: WebServerLike | undefined, store: 
     kind: "exact",
     path: QODER_QUOTA_PATH,
     handler: async (req, res) => {
-      if (req.method !== "GET") {
+      // HEAD is answered too: Node omits the body itself, and refusing it would
+      // report a GET-only route as not readable.
+      if (req.method !== "GET" && req.method !== "HEAD") {
         res.statusCode = 405;
-        res.setHeader("allow", "GET");
+        res.setHeader("allow", "GET, HEAD");
         res.end();
         return;
       }
