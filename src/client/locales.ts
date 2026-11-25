@@ -12,6 +12,19 @@ export type QoderLocaleKey =
   | "section.tokens"
   | "section.window"
   | "section.quota"
+  | "section.usage"
+  | "usage.hint"
+  | "usage.refresh"
+  | "usage.loading"
+  | "usage.unavailable"
+  | "usage.noToken"
+  | "usage.stale"
+  | "usage.used"
+  | "usage.remaining"
+  | "usage.addOn"
+  | "usage.org"
+  | "usage.expires"
+  | "usage.unread"
   | "token.status.loading"
   | "token.status.configured"
   | "token.status.unconfigured"
@@ -58,6 +71,19 @@ export const zh: QoderLocaleDict = {
   "section.tokens": "访问令牌",
   "section.window": "上下文窗口",
   "section.quota": "额度与流式",
+  "section.usage": "本期额度",
+  "usage.hint": "账号整期可用额度，包含其他 Qoder 客户端，不是本次会话的消耗。",
+  "usage.refresh": "刷新额度",
+  "usage.loading": "读取额度…",
+  "usage.unavailable": "额度不可用",
+  "usage.noToken": "该区域还没有访问令牌。",
+  "usage.stale": "刷新失败，显示上次成功读取的额度。",
+  "usage.used": "已用 {used}",
+  "usage.remaining": "剩余 {remaining}",
+  "usage.addOn": "加购",
+  "usage.org": "组织资源包",
+  "usage.expires": "{date} 到期",
+  "usage.unread": "此部署没有 Web 服务，无法读取额度。",
   "token.status.loading": "读取中…",
   "token.status.configured": "已配置",
   "token.status.unconfigured": "未配置",
@@ -102,6 +128,19 @@ export const en: QoderLocaleDict = {
   "section.tokens": "Access tokens",
   "section.window": "Context window",
   "section.quota": "Limits and streaming",
+  "section.usage": "Account quota",
+  "usage.hint": "Account-wide period totals, including other Qoder clients; not this session's spend.",
+  "usage.refresh": "Refresh quota",
+  "usage.loading": "Reading quota…",
+  "usage.unavailable": "Quota unavailable",
+  "usage.noToken": "This region has no access token yet.",
+  "usage.stale": "Refresh failed; showing the last successful account snapshot.",
+  "usage.used": "{used} used",
+  "usage.remaining": "{remaining} left",
+  "usage.addOn": "Add-on",
+  "usage.org": "Organization",
+  "usage.expires": "Expires {date}",
+  "usage.unread": "This deployment serves no web server, so the quota cannot be read.",
   "token.status.loading": "Reading…",
   "token.status.configured": "Configured",
   "token.status.unconfigured": "Not configured",

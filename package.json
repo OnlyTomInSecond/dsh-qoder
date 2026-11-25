@@ -21,7 +21,9 @@
     "icon.svg",
     "README.md",
     "scripts/smoke.mjs",
-    "scripts/config-card-smoke.mjs"
+    "scripts/config-card-smoke.mjs",
+    "scripts/client-card-smoke.mjs",
+    "scripts/quota-smoke.mjs"
   ],
   "dsh": {
     "bundle": {
@@ -39,7 +41,10 @@
     "build": "node build.mjs",
     "smoke": "node scripts/smoke.mjs",
     "prepare": "npm run build",
-    "smoke:config": "node scripts/config-card-smoke.mjs"
+    "smoke:config": "node scripts/config-card-smoke.mjs",
+    "smoke:client": "node scripts/client-card-smoke.mjs",
+    "smoke:quota": "node scripts/quota-smoke.mjs",
+    "check": "npm run smoke:config && npm run smoke:client && npm run smoke:quota"
   },
   "devDependencies": {
     "@deepseek-ai/schemastery": "^3.19.0",

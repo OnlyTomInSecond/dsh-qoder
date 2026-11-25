@@ -23,6 +23,7 @@ import {
   MAX_STREAM_TIMEOUT_MS,
 } from "../qoder/limits.js";
 import type { QoderLocaleKey } from "./locales.js";
+import type { QoderQuotaState } from "./quota.js";
 
 /** Upper bound on the per-request output cap, re-exported for the card's own bound checks. */
 export { MAX_OUTPUT_TOKENS_LIMIT };
@@ -139,6 +140,8 @@ export interface QoderCardState {
   failure: { kind: "problem"; problem: CardProblem } | { kind: "message"; message: string } | undefined;
   /** Whether any region allows a credential write. */
   tokensWritable: boolean;
+  /** The account-quota block, read from the Host's quota route. */
+  quota: QoderQuotaState;
 }
 
 /** Read the Config values out of a projected section. */
@@ -292,6 +295,15 @@ export interface CardOptions {
   /** The Config form of this bundle's entry. */
   form: CardForm;
   credentials: CardCredentials;
+  /** The account-quota source; absent in a deployment with no readable quota. */
+  quota?: CardQuota;
+}
+
+/** The quota source the card renders and refreshes. */
+export interface CardQuota {
+  getSnapshot(): QoderQuotaState;
+  subscribe(listener: () => void): () => void;
+  refresh(force?: boolean): Promise<void>;
 }
 
 /** One immutable snapshot source, as the slot renderer's `use<Name>` hook expects. */
@@ -311,6 +323,8 @@ export interface QoderCardActions {
   setDebug(value: boolean): void;
   /** Submit the staged edits; resolves after the Host answered. */
   save(): Promise<void>;
+  /** Read the account quota again; `force` asks upstream even inside its cache window. */
+  refreshQuota(force?: boolean): Promise<void>;
 }
 
 /** The controller face the card's slot registration injects. */
@@ -344,13 +358,22 @@ export class QoderCardController implements QoderCardActions {
   private failure: QoderCardState["failure"];
   private state: QoderCardState;
   private readonly unsubscribe: () => void;
+  private readonly unsubscribeQuota: (() => void) | undefined;
   private disposed = false;
 
-  /** @param options - the Config form and the credential Remote this card writes through. */
+  /** @param options - the Config form, the credential Remote, and the quota source this card reads. */
   constructor(private readonly options: CardOptions) {
     this.state = this.project();
     this.unsubscribe = options.form.subscribe(() => { this.derive(); });
+    // The quota block re-renders through the same snapshot, so one card state
+    // carries the token rows, the knobs, and the balance.
+    this.unsubscribeQuota = options.quota?.subscribe(() => { this.derive(); });
     void this.refreshTokens();
+    // First read happens once, when the card mounts; a refresh afterwards is an
+    // explicit click, because a number that changed on its own would re-render
+    // the whole page while someone is editing a field. Deferred by a microtask
+    // so construction never awaits the network.
+    if (options.quota) void Promise.resolve().then(() => this.refreshQuota());
   }
 
   /**
@@ -367,6 +390,7 @@ export class QoderCardController implements QoderCardActions {
       setReasoning: (value) => { this.setReasoning(value); },
       setDebug: (value) => { this.setDebug(value); },
       save: () => this.save(),
+      refreshQuota: (force) => this.refreshQuota(force),
     };
   }
 
@@ -380,11 +404,21 @@ export class QoderCardController implements QoderCardActions {
     return () => { this.listeners.delete(listener); };
   }
 
-  /** Stop following the form and the credential Remote. */
+  /** Stop following the form, the credential Remote, and the quota route. */
   dispose(): void {
     this.disposed = true;
     this.unsubscribe();
+    this.unsubscribeQuota?.();
     this.listeners.clear();
+  }
+
+  /**
+   * Read the account quota through the Host.
+   * @param force - ask upstream even inside the Host's cache window.
+   * @returns settlement after the quota snapshot published its outcome.
+   */
+  refreshQuota(force = false): Promise<void> {
+    return this.options.quota?.refresh(force) ?? Promise.resolve();
   }
 
   editToken(ref: string, value: string): void {
@@ -493,7 +527,12 @@ export class QoderCardController implements QoderCardActions {
       this.clearDrafts();
       this.saved = !stranded;
       if (stranded) this.failure = { kind: "problem", problem: { kind: "notServed" } };
-      if (stored.length > 0) await this.refreshTokens();
+      if (stored.length > 0) {
+        await this.refreshTokens();
+        // A stored token can be a different account, and the Host keyed its
+        // cached figure by the old one: read the balance for the new account.
+        await this.refreshQuota();
+      }
     } catch (error) {
       this.failure = { kind: "message", message: error instanceof Error ? error.message : String(error) };
     } finally {
@@ -572,6 +611,9 @@ export class QoderCardController implements QoderCardActions {
       saved: this.saved,
       failure: this.failure,
       tokensWritable: Object.values(this.tokens).some((token) => token.writable),
+      // Without a source this deployment serves no quota route, which the
+      // block states instead of pretending the account has no credits.
+      quota: this.options.quota?.getSnapshot() ?? { status: "unavailable", regions: [], busy: false },
     };
   }
 }

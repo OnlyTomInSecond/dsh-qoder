@@ -29,8 +29,16 @@ const React = { createElement: element };
 
 const registrations = [];
 const window = { __ModuleLoader__: { load: (registration) => { registrations.push(registration); } } };
+// The card's quota reader asks the Host's route; the sandbox supplies a fetch
+// with a Qoder-shaped answer so the block renders real numbers.
+const quotaFetch = { calls: [], body: undefined };
+const fetchStub = async (input) => {
+  quotaFetch.calls.push(String(input));
+  if (quotaFetch.body === undefined) return { ok: false, status: 404, json: async () => ({}) };
+  return { ok: true, status: 200, json: async () => quotaFetch.body };
+};
 const source = await readFile(new URL("../lib/client.js", import.meta.url), "utf8");
-runInNewContext(source, { window, console });
+runInNewContext(source, { window, console, fetch: fetchStub });
 check("the bundle registers exactly one module", registrations.length === 1, String(registrations.length));
 const registration = registrations[0];
 check("the module id is the package name", registration.id === "@local/dsh-llm-qoder", registration.id);
@@ -170,6 +178,66 @@ function walk(node, out = []) {
 }
 
 check("summary renders one line", typeof render("summary") === "object" && render("summary").type === "span");
+
+/* ---- the quota block ---------------------------------------------------- */
+
+/** Let the deferred first read and its snapshot publication settle. */
+const settle = async () => { for (let i = 0; i < 5; i += 1) await new Promise((resolve) => setTimeout(resolve)); };
+
+// The card reads the balance once on mount, from the Host's own route.
+await settle();
+check("the card reads the quota route", quotaFetch.calls[0] === "qoder/quota", JSON.stringify(quotaFetch.calls));
+check("a missing route leaves the block unavailable",
+  face.hooks.qoderCard.getSnapshot().quota.status === "unavailable",
+  JSON.stringify(face.hooks.qoderCard.getSnapshot().quota));
+
+quotaFetch.body = {
+  regions: [
+    { mode: "global", configured: true, quota: {
+      status: "fresh",
+      snapshot: { userQuota: { total: 1000, used: 127.5, remaining: 872.5, unit: "credits" }, expiresAt: 1790812800000 },
+      updatedAt: 1,
+    } },
+    { mode: "cn", configured: false, quota: { status: "unavailable", error: "No token for this region" } },
+  ],
+};
+await face.refreshQuota(true);
+check("a refresh asks upstream through the route", quotaFetch.calls.at(-1) === "qoder/quota?refresh=1",
+  JSON.stringify(quotaFetch.calls));
+const quotaState = face.hooks.qoderCard.getSnapshot().quota;
+check("the read publishes both regions", quotaState.regions.length === 2, JSON.stringify(quotaState));
+check("a configured region is ready", quotaState.regions.find((r) => r.mode === "global")?.quota.status === "fresh");
+
+const quotaNodes = walk(render("page")).filter((node) => node.props?.["data-qoder-quota"] !== undefined);
+check("the card renders one quota row per region", quotaNodes.length === 2, String(quotaNodes.length));
+const quotaText = JSON.stringify(quotaNodes);
+check("the balance shows the used/total split", quotaText.includes("127.5/1,000"), quotaText);
+check("the balance shows what is left, with its unit", quotaText.includes("872.5 credits"), quotaText);
+check("a region without a token says so", quotaText.includes("no access token"), quotaText);
+check("the block states the figure is account-wide",
+  JSON.stringify(walk(render("page"))).includes("Account-wide period totals"));
+const refreshButton = walk(render("page")).find((node) => node.type === "button" && JSON.stringify(node.children).includes("Refresh"));
+check("the block offers a refresh action", refreshButton !== undefined);
+const refreshCalls = quotaFetch.calls.length;
+refreshButton.props.onClick();
+await settle();
+check("the refresh action re-reads the quota", quotaFetch.calls.length === refreshCalls + 1,
+  JSON.stringify(quotaFetch.calls.slice(refreshCalls)));
+
+// A failed read keeps the rows and their numbers: a balance someone is reading
+// must not be replaced by an error line.
+quotaFetch.body = undefined;
+await face.refreshQuota(true);
+const afterFailure = face.hooks.qoderCard.getSnapshot().quota;
+check("a failed refresh keeps the last rows", afterFailure.regions.length === 2, JSON.stringify(afterFailure));
+check("a failed refresh reports its cause", typeof afterFailure.error === "string", JSON.stringify(afterFailure.error));
+check("a failed refresh re-enables the refresh action",
+  walk(render("page")).find((node) => node.type === "button" && JSON.stringify(node.children).includes("Refresh") ||
+    JSON.stringify(node.children).includes("Reading")).props.disabled === false);
+
+// Restore a good answer for the rest of the run.
+quotaFetch.body = { regions: [] };
+await face.refreshQuota(true);
 
 const summary = walk(render("page"));
 const tokenInputs = summary.filter((node) => node.type === "input" && node.props.type === "password");

@@ -44,6 +44,7 @@ import {
   type WindowMode,
 } from "./form.js";
 import { en, zh, type QoderLocaleDict, type QoderLocaleKey } from "./locales.js";
+import { formatCredit, quotaRows, QoderQuotaCard } from "./quota.js";
 
 /** Locale namespace this card owns. */
 export const LOCALE_NS = "llmQoder";
@@ -298,6 +299,81 @@ function QoderConfigCard(props: CardProps): Element {
       state.saved ? h("p", { style: styles.notice }, t("saved")) : null);
   }
 
+  /**
+   * The account-quota block: one row per region, plus a refresh action.
+   *
+   * The figure is account-wide and served by the Host, so this block only
+   * formats what it was given. A region without a token says so instead of
+   * showing `?`, and a snapshot the Host marked stale keeps its numbers with the
+   * cached note underneath — a failed refresh must not erase a balance the
+   * person is reading.
+   * @returns the quota section.
+   */
+  function quotaSection(): Element {
+    const quota = state.quota;
+    const rows = quotaRows(quota);
+    /** One bucket as `used/total · remaining unit`. */
+    const bucketLine = (bucket: { used?: number; total?: number; remaining?: number; unit?: string }): string => {
+      const parts: string[] = [];
+      if (bucket.used !== undefined || bucket.total !== undefined) {
+        parts.push(t("usage.used", { used: `${formatCredit(bucket.used)}/${formatCredit(bucket.total)}` }));
+      }
+      if (bucket.remaining !== undefined) {
+        const remaining = `${formatCredit(bucket.remaining)}${bucket.unit === undefined ? "" : ` ${bucket.unit}`}`;
+        parts.push(t("usage.remaining", { remaining }));
+      }
+      return parts.join(" · ");
+    };
+    const regionRow = (row: ReturnType<typeof quotaRows>[number]): Element => {
+      const snapshot = row.view.snapshot;
+      let body: Element;
+      if (!row.configured) {
+        body = h("p", { style: styles.hint }, t("usage.noToken"));
+      } else if (snapshot === undefined) {
+        body = h("p", { style: styles.hint },
+          quota.busy ? t("usage.loading") : quota.status === "unavailable" ? t("usage.unread") : t("usage.unavailable"));
+      } else {
+        body = h(
+          "div",
+          { style: styles.section },
+          ...(snapshot.userQuota === undefined ? [] : [h("p", { style: styles.row }, bucketLine(snapshot.userQuota))]),
+          ...(snapshot.addOnQuota === undefined
+            ? []
+            : [h("p", { style: styles.hint }, `${t("usage.addOn")} · ${bucketLine(snapshot.addOnQuota)}`)]),
+          ...(snapshot.orgResourcePackage === undefined
+            ? []
+            : [h("p", { style: styles.hint }, `${t("usage.org")} · ${bucketLine(snapshot.orgResourcePackage)}`)]),
+          ...(snapshot.expiresAt === undefined
+            ? []
+            : [h("p", { style: styles.hint }, t("usage.expires", {
+              date: new Date(snapshot.expiresAt).toLocaleDateString(),
+            }))]),
+          ...(row.view.status === "stale" ? [h("p", { style: styles.hint }, t("usage.stale"))] : []),
+        );
+      }
+      return h(
+        "div",
+        { key: row.mode, style: styles.section, "data-qoder-quota": row.mode },
+        h("p", { style: styles.title }, row.label),
+        body,
+      );
+    };
+    return h(
+      "div",
+      { style: styles.section },
+      h("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: "12px" } },
+        h("p", { style: styles.title }, t("section.usage")),
+        h("button", {
+          type: "button",
+          style: { ...styles.button, ...(quota.busy ? styles.buttonDisabled : {}) },
+          disabled: quota.busy,
+          onClick: () => { void props.refreshQuota(true); },
+        }, quota.busy ? t("usage.loading") : t("usage.refresh"))),
+      h("p", { style: styles.hint }, t("usage.hint")),
+      ...rows.map(regionRow),
+    );
+  }
+
   function card(): Element {
     return h(
       "div",
@@ -308,6 +384,7 @@ function QoderConfigCard(props: CardProps): Element {
         h("p", { style: styles.title }, t("section.tokens")),
         ...TOKEN_REFS.map(tokenRow),
       ),
+      quotaSection(),
       h(
         "div",
         { style: styles.section },
@@ -373,8 +450,14 @@ export function apply(ctx: ClientContext): void {
   // dictionary namespace, so handing `t` through its inject face keeps the slot
   // registration free of a locale dependency the page does not need to know about.
   const t = ctx.locale.bind(LOCALE_NS);
+  // The card reads the balance from the Host's own route: the access token never
+  // reaches the browser, and a deployment without that route reports quota as
+  // unavailable instead of failing the card.
+  const quota = new QoderQuotaCard((input, init) => fetch(input, init));
+  ctx.effect(() => () => { quota.dispose(); }, "llm-qoder: quota reader");
   const controller = new QoderCardController({
     form: ctx.configForms.get(NS),
+    quota,
     credentials: {
       // The Remote answers with a result envelope; the controller's contract is
       // the value or a thrown failure, so a refusal becomes an error the card
