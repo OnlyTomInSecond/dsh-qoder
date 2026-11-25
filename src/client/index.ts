@@ -356,7 +356,9 @@ function QoderConfigCard(props: CardProps): Element {
       return h(
         "div",
         { key: row.mode, style: styles.section, "data-qoder-quota": row.mode },
-        h("p", { style: styles.title }, row.label),
+        // The same label the token row above uses, so the two blocks name a
+        // region identically.
+        h("p", { style: styles.title }, TOKEN_REFS.find((entry) => entry.mode === row.mode)?.label ?? row.mode),
         body,
       );
     };

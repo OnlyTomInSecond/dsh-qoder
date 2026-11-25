@@ -45,11 +45,12 @@ export interface QoderQuotaFace {
 
 type Fetch = (input: string, init?: RequestInit) => Promise<Response>;
 
-/** The regions this package ships, so a missing host answer still renders rows. */
-const REGION_ORDER: readonly { mode: QoderMode; label: string }[] = [
-  { mode: "global", label: "Qoder" },
-  { mode: "cn", label: "Qoder CN" },
-];
+/**
+ * The regions this package ships, so a row exists before the Host answers. The
+ * names live in {@link TOKEN_REFS}, which the card already renders above this
+ * block: one list of regions, not two that could drift.
+ */
+const REGION_ORDER: readonly QoderMode[] = ["global", "cn"];
 
 /** Parse the route's answer, refusing anything that is not the documented shape. */
 function parsePayload(value: unknown): QoderQuotaPayload {
@@ -148,10 +149,9 @@ export class QoderQuotaCard implements QoderQuotaFace {
   }
 }
 
-/** One row the card renders: a region, its account label, and its figure. */
+/** One row the card renders: a region and its figure. */
 export interface QoderQuotaRow {
   mode: QoderMode;
-  label: string;
   configured: boolean;
   view: QoderQuotaView;
 }
@@ -163,11 +163,10 @@ export interface QoderQuotaRow {
  */
 export function quotaRows(state: QoderQuotaState): readonly QoderQuotaRow[] {
   const answered = new Map(state.regions.map((region) => [region.mode, region]));
-  return REGION_ORDER.map(({ mode, label }) => {
+  return REGION_ORDER.map((mode) => {
     const region = answered.get(mode);
     return {
       mode,
-      label,
       configured: region?.configured === true,
       view: region?.quota ?? { status: "unavailable" },
     };
