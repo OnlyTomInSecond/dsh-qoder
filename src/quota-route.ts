@@ -18,12 +18,17 @@ import { QODER_QUOTA_PATH, type QoderQuotaPayload, type QoderQuotaRegion } from 
 import { QODER_MODES, type QoderMode } from "./qoder/region.js";
 import type { QoderCredentialStore } from "./qoder-credentials.js";
 
+/** The admitted Peer a route handler is given, as this route reads it. */
+interface AdmittedPeer {
+  principal: { kind: string };
+}
+
 /** The slice of `ctx.webServer` this route registers into. */
 export interface WebServerLike {
   register(route: {
     kind: "exact" | "prefix";
     path: string;
-    handler: (req: IncomingMessage, res: ServerResponse) => void | Promise<void>;
+    handler: (req: IncomingMessage, res: ServerResponse, peer?: AdmittedPeer) => void | Promise<void>;
     auth?: "required" | "anonymous" | "deny";
   }): () => void;
 }
@@ -86,7 +91,15 @@ export function registerQuotaRoute(webServer: WebServerLike | undefined, store: 
   const dispose = webServer.register({
     kind: "exact",
     path: QODER_QUOTA_PATH,
-    handler: async (req, res) => {
+    handler: async (req, res, peer) => {
+      // `auth: required` admits every authenticated Peer, and a paired browser
+      // of another owner is authenticated too. A credit balance is the account
+      // holder's data, so only the owner reads it — the same fence the host's
+      // own owner-only routes use.
+      if (peer?.principal.kind !== "owner") {
+        sendJson(res, 403, { code: "forbidden", message: "owner access required" });
+        return;
+      }
       // HEAD is answered too: Node omits the body itself, and refusing it would
       // report a GET-only route as not readable.
       if (req.method !== "GET" && req.method !== "HEAD") {

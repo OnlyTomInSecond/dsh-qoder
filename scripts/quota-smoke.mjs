@@ -85,6 +85,9 @@ check("the route requires an admitted Peer", route?.auth === undefined || route.
 
 /* ---- drive the handler -------------------------------------------------- */
 
+/** The admitted Peer: the owner, as an ordinary browser sign-in is. */
+const owner = { principal: { kind: "owner" } };
+
 /** One fake ServerResponse capturing status, headers, and body. */
 function response() {
   return {
@@ -98,7 +101,7 @@ function response() {
 
 async function read(path = "/qoder/quota") {
   const res = response();
-  await route.handler({ method: "GET", url: path, headers: {} }, res);
+  await route.handler({ method: "GET", url: path, headers: {} }, res, owner);
   return { status: res.statusCode, headers: res.headers, json: res.body ? JSON.parse(res.body) : undefined };
 }
 
@@ -143,7 +146,7 @@ check("a failed refresh is not cached as fresh", fetchCalls > callsAfterFirst + 
 /* ---- the route refuses anything but a read ------------------------------ */
 
 const res = response();
-await route.handler({ method: "POST", url: "/qoder/quota", headers: {} }, res);
+await route.handler({ method: "POST", url: "/qoder/quota", headers: {} }, res, owner);
 check("a write is refused with 405", res.statusCode === 405, String(res.statusCode));
 check("the refusal names the readable methods", res.headers.allow === "GET, HEAD", String(res.headers.allow));
 
@@ -155,8 +158,14 @@ const head = {
   setHeader(name, value) { this.headers[name] = value; },
   end(body) { if (body !== undefined) this.body = String(body); },
 };
-await route.handler({ method: "HEAD", url: "/qoder/quota", headers: {} }, head);
+await route.handler({ method: "HEAD", url: "/qoder/quota", headers: {} }, head, owner);
 check("HEAD is answered", head.statusCode === 200, String(head.statusCode));
+
+/* ---- a paired browser of someone else is refused ------------------------ */
+
+const foreignRes = response();
+await route.handler({ method: "GET", url: "/qoder/quota", headers: {} }, foreignRes, { principal: { kind: "paired" } });
+check("a non-owner Peer is refused", foreignRes.statusCode === 403, String(foreignRes.statusCode));
 
 /* ---- a deployment without a web server keeps working -------------------- */
 
