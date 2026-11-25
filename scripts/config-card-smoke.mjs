@@ -1,9 +1,10 @@
-// Offline check of the configuration card's form logic and of the model-list
-// gate. No network, no DSH install: the card's rules are pure functions, and
-// the adapter is driven with fake Host services.
+// Offline check of the card's pure form rules and of the model-list gate. No
+// network, no DSH install: the rules are pure functions, and the adapter is
+// driven with fake Host services.
 import {
-  MAX_OUTPUT_TOKENS_LIMIT, TOKEN_REFS, draftOps, numberAt, profileOps, tokenDrafts, windowModeOf,
+  MAX_OUTPUT_TOKENS_LIMIT, NUMBER_FIELDS, TOKEN_REFS, draftOps, numberAt, profileOps, tokenDrafts, windowModeOf,
 } from "../lib/form.js";
+
 import { apply } from "../index.js";
 
 let failures = 0;
@@ -15,7 +16,7 @@ function check(label, condition, detail) {
 
 /** A draft with every field at its default, overridden per call. */
 const draft = (overrides = {}) => ({
-  mode: "catalog", windowText: "", outputText: "", idleText: "", deltaText: "",
+  mode: "catalog", windowText: "", fields: { output: "", idle: "", delta: "" },
   reasoning: "none", debug: false, ...overrides,
 });
 
@@ -23,37 +24,66 @@ const opAt = (ops, path) => ops.find((op) => op.path[0] === path);
 
 // ---- context window modes ------------------------------------------------
 {
-  const { ops } = draftOps(draft({ mode: "catalog" }));
+  // Switching FROM a stored custom window TO the catalog default: the mode
+  // writes what the switch needs, and nothing else.
+  const before = { contextWindow: 400000 };
+  const { ops } = draftOps(draft({ mode: "catalog" }), before);
   check("catalog unsets the explicit window", opAt(ops, "contextWindow")?.op === "unset");
   check("catalog clears the max flag", opAt(ops, "useMaxContext")?.value === false);
 }
 {
-  const { ops } = draftOps(draft({ mode: "max" }));
+  const { ops } = draftOps(draft({ mode: "max" }), {});
   check("max unsets the explicit window", opAt(ops, "contextWindow")?.op === "unset");
   check("max sets the flag", opAt(ops, "useMaxContext")?.value === true);
 }
 {
-  const { ops } = draftOps(draft({ mode: "custom", windowText: "400000" }));
+  const { ops } = draftOps(draft({ mode: "custom", windowText: "400000" }), {});
   check("custom sets the window", opAt(ops, "contextWindow")?.value === 400000);
   check("custom clears the max flag", opAt(ops, "useMaxContext")?.value === false);
 }
 {
-  const plan = draftOps(draft({ mode: "custom", windowText: "" }));
-  check("custom without a number is refused", "problem" in plan, JSON.stringify(plan));
+  const { ops } = draftOps(draft({ mode: "custom", windowText: "400000" }), { contextWindow: 200000 });
+  check("an edited custom window rewrites only the window", opAt(ops, "contextWindow")?.value === 400000
+    && opAt(ops, "useMaxContext") === undefined, JSON.stringify(ops));
 }
 {
-  const plan = draftOps(draft({ mode: "custom", windowText: "1.5" }));
-  check("a fractional window is refused", "problem" in plan, JSON.stringify(plan));
+  const plan = draftOps(draft({ mode: "catalog" }), {});
+  check("an unchanged mode writes no mode field", !("problem" in plan)
+    && !opAt(plan.ops, "contextWindow") && !opAt(plan.ops, "useMaxContext"), JSON.stringify(plan));
+}
+{
+  const plan = draftOps(draft({ mode: "custom", windowText: "" }), {});
+  check("custom without a number is refused",
+    "problem" in plan && plan.problem.kind === "notInteger" && plan.problem.field === "field.window", JSON.stringify(plan));
+  const fractional = draftOps(draft({ mode: "custom", windowText: "1.5" }), {});
+  check("a fractional window is refused", "problem" in fractional, JSON.stringify(fractional));
+  // A custom window stays validated even when the stored mode is already custom.
+  const unchanged = draftOps(draft({ mode: "custom", windowText: "" }), { contextWindow: 200000 });
+  check("an emptied custom window is still refused", "problem" in unchanged, JSON.stringify(unchanged));
 }
 
 // ---- other knobs ---------------------------------------------------------
 {
-  const { ops } = draftOps(draft({ deltaText: "0" }));
+  const { ops } = draftOps(draft({ fields: { output: "", idle: "", delta: "0" } }));
   check("a zero delta interval is accepted", opAt(ops, "streamDeltaIntervalMs")?.value === 0);
 }
 {
-  const plan = draftOps(draft({ outputText: String(MAX_OUTPUT_TOKENS_LIMIT + 1) }));
-  check("an over-limit output cap is refused", "problem" in plan, JSON.stringify(plan));
+  const over = String(MAX_OUTPUT_TOKENS_LIMIT + 1);
+  const tooBig = draftOps(draft({ fields: { output: over, idle: "", delta: "" } }));
+  check("an over-limit output cap is refused",
+    "problem" in tooBig && tooBig.problem.kind === "overMax" && tooBig.problem.max === MAX_OUTPUT_TOKENS_LIMIT, JSON.stringify(tooBig));
+  const { ops } = draftOps(draft({ fields: { output: "8192", idle: "30000", delta: "" } }));
+  check("an output cap is written", opAt(ops, "maxOutputTokens")?.value === 8192);
+  check("an idle timeout is written", opAt(ops, "streamIdleTimeoutMs")?.value === 30000);
+  check("a blank delta interval writes nothing", !opAt(ops, "streamDeltaIntervalMs"));
+}
+{
+  // A save that stores only a token must not pin the other knobs.
+  const current = { maxOutputTokens: 32768, replayReasoning: "none", debug: false };
+  const { ops } = draftOps(draft({ fields: { output: "32768", idle: "", delta: "" } }), current);
+  check("an unchanged cap is not rewritten", !opAt(ops, "maxOutputTokens"), JSON.stringify(ops));
+  check("an unchanged replay policy is not rewritten", !opAt(ops, "replayReasoning"), JSON.stringify(ops));
+  check("an unchanged debug flag is not rewritten", !opAt(ops, "debug"), JSON.stringify(ops));
 }
 {
   const { ops } = draftOps(draft({ reasoning: "last", debug: true }));
@@ -61,8 +91,9 @@ const opAt = (ops, path) => ops.find((op) => op.path[0] === path);
   check("debug is written", opAt(ops, "debug")?.value === true);
 }
 {
-  const { ops } = draftOps(draft({ outputText: "", idleText: "", deltaText: "" }));
+  const { ops } = draftOps(draft());
   check("blank optional fields write nothing", !opAt(ops, "maxOutputTokens") && !opAt(ops, "streamIdleTimeoutMs"));
+  check("every knob has a distinct Config field", new Set(NUMBER_FIELDS.map((spec) => spec.field)).size === NUMBER_FIELDS.length);
 }
 
 // ---- helpers -------------------------------------------------------------
@@ -81,8 +112,15 @@ check("neither implies catalog mode", windowModeOf({}) === "catalog");
   check("the profile names the token reference", opAt(ops, "providers")?.value.apiKeyEnv === "QODER_API_KEY");
   const again = profileOps(stored, { qoder: { apiKeyEnv: "QODER_API_KEY" } });
   check("an existing profile is not rewritten", again.length === 0, JSON.stringify(again));
+  check("the CN token marks the CN profile", profileOps(tokenDrafts({ QODER_CN_API_KEY: "jt-a" }), {})[0]?.path[1] === "qoder-cn");
+  // A profile write is a path op on the volatile `providers` dict; a plain
+  // object would be refused by the non-volatile validator.
+  check("the profile write is path-addressed", profileOps(stored, {})[0]?.op === "set" && profileOps(stored, {})[0].path.length === 2);
 }
 check("both regions have a reference", TOKEN_REFS.length === 2);
+check("each region writes only its own reference", TOKEN_REFS.every((entry) => entry.aliases.includes(entry.ref)));
+check("the two regions do not share a reference",
+  TOKEN_REFS[0].aliases.every((ref) => !TOKEN_REFS[1].aliases.includes(ref)));
 
 // ---- the model list follows the token, not the profile -------------------
 {

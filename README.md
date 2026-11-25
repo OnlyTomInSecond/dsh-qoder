@@ -74,8 +74,12 @@ DSH 的 Models 页只为它内置的两类供应商（`llm-deepseek`、`llm-pi-a
 实现要点：
 
 - 浏览器半是 `src/client/`，构建成 DSH 客户端模块系统要求的 lazy-CJS 产物 `lib/client.js`（`npm run build` 生成）；只把 `react` 留作外部依赖，其余全部内联。
+- `plugins.bundle.config` 是按**包名**取键的槽位，页面**不会**给它传 `form`（只有 `plugins.item` / `plugins.row.config` 会拿到 `ConfigPageForm`，因为它们的键就是设置命名空间）。所以卡片自己通过 `ctx.configForms.get("llm-qoder")` 绑定该插件的 Config 表单并跟随它的快照，而不是等页面施舍 `form`。
+- `ctx.remote.credentials` 的方法返回的是 `RemoteResult` 信封（`{ok, value}` / `{ok, error}`），失败不是异常。浏览器半统一解包，被拒绝的写入才会以错误显示，而不是当成成功。
 - Host 侧不新增任何 HTTP 路由，也不改 DSH 源码；卡片通过 `ctx.configForms` 写配置、通过 `ctx.remote.credentials` 写令牌，都是 DSH 已有的服务。
 - bundle 被关闭时配置页一并消失，因为 DSH 的 client 模块系统按 Loader 行装载浏览器半。
+- 卡片文案走客户端 locale 服务（命名空间 `llmQoder`，内置中英两套），跟随界面语言，不在代码里硬编码中文。
+- 页面正文只放这张卡片：长描述来自 `locale/*.json` 的 `meta.detail`，指向 `docs/plugin-page.md`，不再把整份 README 摆到插件页上。
 
 也可以完全不用界面，直接写 profile patch 并用环境变量提供令牌：
 
@@ -200,7 +204,11 @@ Host 侧安装后立即生效。在 **Plugins → `@local/dsh-llm-qoder`** 里�
 | `src/qoder-credentials.ts` | DSH 凭据引用 / DSH 记录 / 环境变量的解析与刷新 |
 | `src/pi-context.ts` | DSH 消息与工具 → pi transcript |
 | `src/qoder/settings.ts` | Credit/流式选项：volatile Config schema + 每请求解析 |
-| `src/client/` | 浏览器半：Plugins 页里的配置卡片（令牌 + 额度选项） |
+| `src/qoder/limits.ts` | Host 与浏览器半共用的上下限/默认值（避免两边漂移） |
+| `src/client/index.ts` | 浏览器半：Plugins 页里的配置卡片（令牌 + 额度选项） |
+| `src/client/form.ts` | 卡片的状态、校验与保存顺序（纯逻辑 + 控制器） |
+| `src/client/locales.ts` | 卡片文案（中/英），注册进客户端 locale 服务 |
+| `docs/plugin-page.md` | 插件页正文：一句话说明，正文其余交给卡片 |
 | `src/stream-bridge.ts` | pi 事件 → DSH `StreamChunk` |
 | `src/qoder/` | 自包含的 Qoder 协议实现（含 `pi-ai.ts` 本地类型/辅助函数，无外部运行时依赖） |
 
@@ -208,11 +216,14 @@ Host 侧安装后立即生效。在 **Plugins → `@local/dsh-llm-qoder`** 里�
 
 ```bash
 node build.mjs
-node scripts/config-card-smoke.mjs                   # 配置卡片表单逻辑 + 模型列表 gate（离线）
+node scripts/config-card-smoke.mjs                   # 表单规则 + 模型列表 gate（离线）
+node scripts/client-card-smoke.mjs                   # 浏览器半的接线（离线）
 node scripts/smoke.mjs                               # 实时目录（需要令牌）
 QODER_API_KEY=... QODER_SMOKE_STREAM=1 node scripts/smoke.mjs  # 真实流式
 ```
 
-`scripts/config-card-smoke.mjs` 驱动配置卡片背后的纯逻辑（三种窗口模式、超限拒绝、零值增量间隔、令牌与 profile 写入），并用假服务验证「模型列表跟随令牌而非 profile 条目」。
+`scripts/config-card-smoke.mjs` 驱动配置卡片背后的纯逻辑（三种窗口模式、超限拒绝、零值增量间隔、只写真正改动的字段、令牌与 profile 写入），并用假服务验证「模型列表跟随令牌而非 profile 条目」。
+
+`scripts/client-card-smoke.mjs` 按 DSH 客户端模块系统的方式装载 `lib/client.js`（`window.__ModuleLoader__.load` + 注入的 `require`），把 `react`、`ctx.slots`、`ctx.configForms`、`ctx.remote.credentials`、`ctx.locale` 换成假服务，再渲染卡片并点击保存。它守住三件曾经坏掉的事：卡片能拿到插件的 Config 表单、令牌输入可写并真的写入凭据、被拒绝的 `RemoteResult` 会显示成错误而不是静默成功。
 
 模型目录、真实流式和 DSH `headless` 端到端均已验证。`headless` profile 默认不挂载 settings/credentials，因此流式冒烟需要显式传 `QODER_API_KEY`/`QODER_ACCESS_TOKEN`；这是 DSH 启动环境变量，不涉及 pi 配置。

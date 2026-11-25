@@ -8,41 +8,53 @@
  * own configuration — so both the token and the Credit knobs live in one place
  * the plugin owns.
  *
- * Two services carry the writes, both already used by the Models card:
+ * Three facts shape how the card is wired, and all three differ from the
+ * official plugin pages:
  *
- *   ctx.configForms  the Config fields (context window, output cap, thinking
- *                    replay, stream timeouts, debug) plus the `providers`
- *                    entry a stored token marks as added, written against the
- *                    entry's revision
- *   ctx.remote.credentials  the tokens, under QODER_API_KEY / QODER_CN_API_KEY;
- *                    the page only ever learns whether one is configured
+ * 1. `plugins.bundle.config` is rendered WITHOUT a `form` prop. The page hands
+ *    a `ConfigPageForm` to `plugins.item` and `plugins.row.config` entries,
+ *    whose namespace is the entry id it looks the form up by. A bundle
+ *    configuration is keyed by the PACKAGE name, which is not a settings
+ *    namespace, so the card binds its own form through `ctx.configForms.get`
+ *    and follows the snapshot that form publishes.
+ * 2. `ctx.remote.*` answers with a `RemoteResult`, not the raw value: a
+ *    refusal is `{ok: false, error}` rather than a rejection, so every call
+ *    here unwraps it — otherwise a refused write would look like a success.
+ * 3. The card owns its copy through the client locale service, like every
+ *    other settings page, instead of hard-coding one language.
  *
- * Written with `createElement` rather than JSX so the browser half needs no JSX
- * runtime beyond `react`, which the shell's module table already provides.
+ * Written with `createElement` rather than JSX so the browser half needs no
+ * build-time JSX toolchain; `react` is the one module the shell's table
+ * provides.
  */
 
+import { MAX_STREAM_DELTA_MS, MAX_STREAM_TIMEOUT_MS, MAX_OUTPUT_TOKENS_LIMIT } from "../qoder/limits.js";
 import {
-  MAX_OUTPUT_TOKENS_LIMIT,
+  NUMBER_FIELDS,
   TOKEN_REFS,
-  draftOps,
-  numberAt,
-  profileOps,
-  tokenDrafts,
-  valuesOf,
-  windowModeOf,
-  type QoderConfigValues,
+  QoderCardController,
+  type CardProblem,
+  type NumberFieldKey,
+  type QoderCardFace,
+  type QoderCardState,
+  type ReasoningReplay,
   type SettingsPathOp,
+  type TokenState,
   type WindowMode,
 } from "./form.js";
+import { en, zh, type QoderLocaleDict, type QoderLocaleKey } from "./locales.js";
 
-/** Settings namespace: the plugin entry id in the profile. */
+/** Locale namespace this card owns. */
+export const LOCALE_NS = "llmQoder";
+
+/** Settings namespace: the Host plugin entry id this bundle's patch inserts. */
 export const NS = "llm-qoder";
 
 /** The package name this bundle's `plugins.bundle.config` entry is keyed by. */
 export const BUNDLE = "@local/dsh-llm-qoder";
 
 /** Services the browser half requires (cordis fiber inject). */
-export const inject = ["slots", "configForms", "remote", "remote.credentials"];
+export const inject = ["slots", "locale", "configForms", "remote", "remote.credentials"];
 
 /* ------------------------------------------------------------------ *
  * Minimal structural types
@@ -54,41 +66,33 @@ export const inject = ["slots", "configForms", "remote", "remote.credentials"];
 
 type Element = unknown;
 type Cleanup = () => void;
+type Translate = (key: QoderLocaleKey, params?: Record<string, unknown>) => string;
 
 interface ReactLike {
   createElement(type: unknown, props?: Record<string, unknown> | null, ...children: unknown[]): Element;
-  useState<T>(initial: T | (() => T)): [T, (next: T | ((current: T) => T)) => void];
-  useEffect(effect: () => void | Cleanup, deps?: readonly unknown[]): void;
 }
 
-interface ConfigFormSnapshot {
-  status: "loading" | "ready" | "unavailable";
-  value: unknown;
-  revision: number | undefined;
-  writable: boolean;
+/** The Remote answer envelope (`RemoteResult`), structurally. */
+interface RemoteResultLike<T> {
+  ok: boolean;
+  value?: T;
+  error?: { message?: string; code?: string };
 }
 
-/** The form the Plugins page hands a configuration entry. */
-interface ConfigPageForm {
-  state: ConfigFormSnapshot;
-  mutate(ops: readonly SettingsPathOp[], expectedRevision?: number): Promise<boolean>;
+interface CredentialsNamespace {
+  describe(refs: string[]): Promise<RemoteResultLike<Record<string, TokenState>>>;
+  set(ref: string, value: string): Promise<RemoteResultLike<void>>;
 }
 
-/** Owner props of a `plugins.bundle.config` entry. */
-interface BundleConfigProps {
-  view?: "summary" | "page";
-  form?: ConfigPageForm;
-}
-
-interface CredentialInfo {
-  configured: boolean;
-  writable: boolean;
-  masked?: string;
-}
-
-interface CredentialsRemote {
-  describe(refs: string[]): Promise<Record<string, CredentialInfo>>;
-  set(ref: string, value: string): Promise<unknown>;
+interface ConfigFormLike {
+  getSnapshot(): {
+    status: "loading" | "ready" | "unavailable";
+    value: unknown;
+    revision: number | undefined;
+    writable: boolean;
+  };
+  subscribe(listener: () => void): () => void;
+  mutate(ops: readonly SettingsPathOp[], revision?: number): Promise<boolean>;
 }
 
 interface SlotsService {
@@ -96,14 +100,21 @@ interface SlotsService {
   register(options: Record<string, unknown>, component: unknown): Cleanup;
 }
 
+interface LocaleService {
+  register(ns: string, dictionaries: Record<string, QoderLocaleDict>): Cleanup;
+  bind(ns: string): Translate;
+}
+
 interface ConfigFormsService {
+  get(namespace: string): ConfigFormLike;
   whileServed(namespaces: readonly string[], register: () => Cleanup): Cleanup;
 }
 
 interface ClientContext {
   slots: SlotsService;
+  locale: LocaleService;
   configForms: ConfigFormsService;
-  remote: { credentials: CredentialsRemote };
+  remote: { credentials: CredentialsNamespace };
   effect(callback: () => unknown, label?: string): unknown;
 }
 
@@ -111,6 +122,12 @@ interface ClientContext {
 declare const require: (specifier: string) => unknown;
 
 const React = (require as (s: string) => ReactLike)("react");
+
+/** The message of a refused Remote answer. */
+function refusalOf(result: RemoteResultLike<unknown>): string {
+  const message = result.error?.message;
+  return message === undefined || message === "" ? "the Host refused the write" : message;
+}
 
 /* ------------------------------------------------------------------ *
  * Presentation
@@ -121,9 +138,10 @@ const styles = {
   section: { display: "flex", flexDirection: "column", gap: "10px" },
   title: { fontSize: "13px", fontWeight: 600, margin: 0 },
   hint: { fontSize: "12px", lineHeight: 1.5, margin: 0, opacity: 0.65 },
+  link: { fontSize: "12px", color: "inherit", textDecoration: "underline", opacity: 0.8 },
   row: { display: "flex", alignItems: "center", gap: "8px", fontSize: "13px" },
   label: { display: "flex", flexDirection: "column", gap: "4px", fontSize: "13px" },
-  grid: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: "12px" },
+  grid: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: "12px" },
   input: {
     padding: "6px 9px",
     fontSize: "13px",
@@ -149,82 +167,68 @@ const styles = {
   notice: { fontSize: "12px", margin: 0, color: "#2e7d32" },
 } as const;
 
-/** Services captured by `apply`, read by the component. */
-let credentialsRemote: CredentialsRemote | undefined;
+/** Props the renderer binds for a `plugins.bundle.config` entry. */
+interface CardProps extends QoderCardFace {
+  view?: "summary" | "page";
+  t: Translate;
+}
 
-const textOf = (value: number | undefined): string => (value === undefined ? "" : String(value));
+/** Render one structured problem in the active language. */
+function problemText(problem: CardProblem, t: Translate): string {
+  if (problem.kind === "conflict") return t("conflict");
+  if (problem.kind === "overMax") return t("problem.max", { field: t(problem.field), max: problem.max });
+  return t("problem.integer", { field: t(problem.field), min: problem.min });
+}
 
 /**
  * Render the bundle's configuration card.
- * @param props - the view the page asks for, and the Host form when it edits.
+ * @param props - the view the page asks for, the card snapshot, its actions, and the translator.
  * @returns the one-liner, or the editable card.
  */
-function QoderConfigCard(props: BundleConfigProps): Element {
+function QoderConfigCard(props: CardProps): Element {
   const h = React.createElement;
-  const form = props.form;
-  const settings: QoderConfigValues = valuesOf(form?.state.value);
+  const { t } = props;
+  const state: QoderCardState = props.useQoderCard((snapshot: QoderCardState) => snapshot);
 
-  const [tokens, setTokens] = React.useState<Record<string, CredentialInfo>>({});
-  const [drafts, setDrafts] = React.useState<Record<string, string>>({});
-  const [mode, setMode] = React.useState<WindowMode>(() => windowModeOf(settings));
-  const [windowText, setWindowText] = React.useState(() => textOf(settings.contextWindow));
-  const [outputText, setOutputText] = React.useState(() => textOf(settings.maxOutputTokens));
-  const [idleText, setIdleText] = React.useState(() => textOf(settings.streamIdleTimeoutMs));
-  const [deltaText, setDeltaText] = React.useState(() => textOf(settings.streamDeltaIntervalMs));
-  const [reasoning, setReasoning] = React.useState<"none" | "last" | "all">(settings.replayReasoning ?? "none");
-  const [debug, setDebug] = React.useState(settings.debug === true);
-  const [busy, setBusy] = React.useState(false);
-  const [failure, setFailure] = React.useState<string | undefined>(undefined);
-  const [saved, setSaved] = React.useState(false);
+  if (props.view === "summary") return h("span", null, t("summary"));
 
-  // Only the configured/unconfigured facts cross the wire, so the inputs start
-  // empty and a blank field means "leave the stored token alone".
-  React.useEffect(() => {
-    if (!credentialsRemote) return;
-    let live = true;
-    void credentialsRemote.describe(TOKEN_REFS.map((entry) => entry.ref)).then(
-      (described) => { if (live) setTokens(described); },
-      () => { if (live) setTokens({}); },
-    );
-    return () => { live = false; };
-  }, []);
-
-  if (props.view === "summary") {
-    return h("span", null, "Qoder: 访问令牌、上下文窗口与额度选项。");
-  }
-
-  const notReady = form === undefined || form.state.status !== "ready" || form.state.writable === false;
-  const disabled = notReady || busy;
-  const output = numberAt(outputText);
-  const invalid = [
-    mode === "custom" && numberAt(windowText) === undefined ? "自定义上下文窗口需要一个大于 0 的整数。" : undefined,
-    outputText.trim() !== "" && output === undefined ? "输出上限需要一个大于 0 的整数。" : undefined,
-    output !== undefined && output > MAX_OUTPUT_TOKENS_LIMIT ? `输出上限不能超过 ${MAX_OUTPUT_TOKENS_LIMIT}。` : undefined,
-  ].filter((entry): entry is string => entry !== undefined);
+  const disabled = !state.editable || state.busy;
+  const canSave = !state.busy && (state.editable || state.tokensWritable);
 
   /** One token row per region. */
   function tokenRow(entry: (typeof TOKEN_REFS)[number]): Element {
-    const info = tokens[entry.ref];
+    const info: TokenState | undefined = state.tokens[entry.ref];
     const configured = info?.configured === true;
+    const canWrite = info?.writable !== false && !state.busy;
+    const status = !state.tokensLoaded
+      ? t("token.status.loading")
+      : configured
+        ? [
+          t("token.status.configured"),
+          info?.masked === undefined ? "" : ` ${info.masked}`,
+          info?.source === undefined || info.source === entry.ref ? "" : ` (${t("token.status.from", { ref: info.source })})`,
+        ].join("")
+        : t("token.status.unconfigured");
     return h(
       "div",
-      { key: entry.ref, style: styles.section },
+      { key: entry.ref, style: styles.section, "data-qoder-region": entry.mode },
       h("p", { style: styles.title }, entry.label),
-      h("p", { style: styles.hint },
-        `网关 ${entry.gateway} · 凭据 ${entry.ref} · ${configured ? `已配置${info?.masked ? ` ${info.masked}` : ""}` : "未配置"}`),
+      h(
+        "p",
+        { style: styles.hint },
+        `${t("token.gateway", { url: entry.gateway, ref: entry.ref })} · ${status} · `,
+        h("a", { href: entry.patUrl, target: "_blank", rel: "noreferrer", style: styles.link }, t("token.create")),
+      ),
       h("input", {
         type: "password",
         style: styles.input,
-        placeholder: configured ? "已保存，留空表示不修改" : "pt-… 或 jt-…",
-        value: drafts[entry.ref] ?? "",
+        placeholder: configured ? t("token.placeholderConfigured") : t("token.placeholder"),
+        value: state.drafts[entry.ref] ?? "",
         autoComplete: "off",
         spellCheck: false,
-        disabled,
-        onChange: (event: { target: { value: string } }) => {
-          const value = event.target.value;
-          setDrafts((current) => ({ ...current, [entry.ref]: value }));
-          setSaved(false);
-        },
+        "aria-label": t("token.aria", { label: entry.label }),
+        disabled: !canWrite,
+        onChange: (event: { target: { value: string } }) => { props.editToken(entry.ref, event.target.value); },
       }),
     );
   }
@@ -235,133 +239,124 @@ function QoderConfigCard(props: BundleConfigProps): Element {
     h("input", {
       type: "radio",
       name: "qoder-context-window",
-      checked: mode === value,
+      checked: state.mode === value,
       disabled,
-      onChange: () => { setMode(value); setSaved(false); },
+      onChange: () => { props.setMode(value); },
     }),
     h("span", null, label),
   );
 
-  async function save(): Promise<void> {
-    setFailure(undefined);
-    setSaved(false);
-    if (invalid.length > 0) {
-      setFailure(invalid[0]);
-      return;
-    }
-    if (!form) return;
-    setBusy(true);
-    try {
-      const stored = tokenDrafts(drafts);
-      const plan = draftOps({ mode, windowText, outputText, idleText, deltaText, reasoning, debug });
-      if ("problem" in plan) {
-        setFailure(plan.problem);
-        return;
-      }
-      // Tokens record the profile entry the Models page and `hasProviderApiKey`
-      // address; a submission that stores one also marks that route as added.
-      const providers = (settings as { providers?: unknown }).providers;
-      const ops = [...plan.ops, ...profileOps(stored, providers)];
+  /** One numeric knob. */
+  const numberField = (spec: (typeof NUMBER_FIELDS)[number]): Element => h(
+    "label",
+    { style: styles.label, key: spec.key },
+    t(`number.${spec.key}` as QoderLocaleKey),
+    h("input", {
+      type: "number",
+      style: styles.input,
+      min: spec.min,
+      max: spec.max,
+      step: 1,
+      placeholder: String(spec.min === 0 ? 0 : ""),
+      value: state.fields[spec.key],
+      disabled,
+      onChange: (event: { target: { value: string } }) => {
+        props.editNumber(spec.key as NumberFieldKey, event.target.value);
+      },
+    }),
+  );
 
-      const accepted = await form.mutate(ops, form.state.revision);
-      if (!accepted) {
-        setFailure("设置未被接受，可能已被其他页面修改，请刷新后重试。");
-        return;
-      }
-
-      // Tokens travel through the credential seam, not the Config document.
-      if (credentialsRemote) {
-        for (const token of stored) await credentialsRemote.set(token.ref, token.value);
-        setTokens(await credentialsRemote.describe(TOKEN_REFS.map((entry) => entry.ref)));
-      }
-      setDrafts({});
-      setSaved(true);
-    } catch (error) {
-      setFailure(error instanceof Error ? error.message : String(error));
-    } finally {
-      setBusy(false);
-    }
-  }
-
+  if (state.status === "ready") return card();
   return h(
     "div",
     { style: styles.card },
-    form === undefined || form.state.status === "ready"
-      ? null
-      : h("p", { style: styles.hint }, form.state.status === "loading" ? "正在读取设置…" : "此部署未对外提供该设置。"),
-
+    h("p", { style: styles.hint }, state.status === "loading" ? t("loading") : t("notServed")),
+    // Credentials are a separate store: a deployment that serves no Config
+    // section can still hold a token, so the rows stay.
     ...TOKEN_REFS.map(tokenRow),
+    state.failure === undefined ? null : failureLine(state.failure),
+    saveControl(),
+  );
 
-    h(
-      "div",
-      { style: styles.section },
-      h("p", { style: styles.title }, "上下文窗口"),
-      h("p", { style: styles.hint }, "决定何时压缩上下文。目录默认档最省；档位由 Qoder 目录公布，超过最大档会被夹取。"),
-      radio("catalog", "目录默认档"),
-      radio("max", "目录最大档（更多压缩余量，更贵）"),
-      radio("custom", "自定义"),
-      h("input", {
-        type: "number",
-        style: { ...styles.input, maxWidth: "220px" },
-        min: 1,
-        step: 1,
-        placeholder: "token 数",
-        value: windowText,
-        disabled: disabled || mode !== "custom",
-        onChange: (event: { target: { value: string } }) => { setWindowText(event.target.value); setSaved(false); },
-      }),
-    ),
+  function failureLine(failure: NonNullable<QoderCardState["failure"]>): Element {
+    const text = failure.kind === "message" ? failure.message : problemText(failure.problem, t);
+    return h("p", { style: styles.error, role: "alert" }, text);
+  }
 
-    h(
+  function saveControl(): Element {
+    return h("div", { style: { display: "flex", alignItems: "center", gap: "12px" } },
+      h("button", {
+        type: "button",
+        style: { ...styles.button, ...(canSave ? {} : styles.buttonDisabled) },
+        disabled: !canSave,
+        onClick: () => { void props.save(); },
+      }, state.busy ? t("saving") : t("save")),
+      state.saved ? h("p", { style: styles.notice }, t("saved")) : null);
+  }
+
+  function card(): Element {
+    return h(
       "div",
-      { style: styles.section },
-      h("p", { style: styles.title }, "额度与流式"),
+      { style: styles.card },
       h(
         "div",
-        { style: styles.grid },
-        h("label", { style: styles.label }, "单次输出上限（tokens）", h("input", {
-          type: "number", style: styles.input, min: 1, max: MAX_OUTPUT_TOKENS_LIMIT, step: 1,
-          placeholder: "默认 32768", value: outputText, disabled,
-          onChange: (event: { target: { value: string } }) => { setOutputText(event.target.value); setSaved(false); },
-        })),
-        h("label", { style: styles.label }, "历史思考回放", h("select", {
-          style: styles.input, value: reasoning, disabled,
-          onChange: (event: { target: { value: string } }) => {
-            setReasoning(event.target.value as "none" | "last" | "all");
-            setSaved(false);
-          },
-        },
-        h("option", { value: "none" }, "none（最省）"),
-        h("option", { value: "last" }, "last（仅当前工具轮）"),
-        h("option", { value: "all" }, "all（qodercli 行为）"))),
-        h("label", { style: styles.label }, "流空闲超时（毫秒）", h("input", {
-          type: "number", style: styles.input, min: 1, step: 1,
-          placeholder: "默认 120000", value: idleText, disabled,
-          onChange: (event: { target: { value: string } }) => { setIdleText(event.target.value); setSaved(false); },
-        })),
-        h("label", { style: styles.label }, "增量合并间隔（毫秒）", h("input", {
-          type: "number", style: styles.input, min: 0, step: 1,
-          placeholder: "默认 50，0 表示不合并", value: deltaText, disabled,
-          onChange: (event: { target: { value: string } }) => { setDeltaText(event.target.value); setSaved(false); },
-        })),
+        { style: styles.section },
+        h("p", { style: styles.title }, t("section.tokens")),
+        ...TOKEN_REFS.map(tokenRow),
       ),
-      h("label", { style: styles.row },
+      h(
+        "div",
+        { style: styles.section },
+        h("p", { style: styles.title }, t("section.window")),
+        h("p", { style: styles.hint }, t("window.hint")),
+        radio("catalog", t("window.catalog")),
+        radio("max", t("window.max")),
+        radio("custom", t("window.custom")),
         h("input", {
-          type: "checkbox", checked: debug, disabled,
-          onChange: () => { setDebug(!debug); setSaved(false); },
+          type: "number",
+          style: { ...styles.input, maxWidth: "220px" },
+          min: 1,
+          step: 1,
+          placeholder: t("window.customPlaceholder"),
+          "aria-label": t("window.customAria"),
+          value: state.window,
+          disabled: disabled || state.mode !== "custom",
+          onChange: (event: { target: { value: string } }) => { props.editWindow(event.target.value); },
         }),
-        h("span", null, "输出诊断日志")),
-    ),
-
-    failure === undefined ? null : h("p", { style: styles.error }, failure),
-    saved ? h("p", { style: styles.notice }, "已保存。令牌与选项下一次请求即生效。") : null,
-    h("button", {
-      type: "button",
-      style: { ...styles.button, ...(disabled ? styles.buttonDisabled : {}) },
-      disabled,
-      onClick: () => { void save(); },
-    }, busy ? "保存中…" : "保存"),
-  );
+      ),
+      h(
+        "div",
+        { style: styles.section },
+        h("p", { style: styles.title }, t("section.quota")),
+        h("div", { style: styles.grid }, ...NUMBER_FIELDS.map(numberField),
+          h("label", { style: styles.label }, t("reasoning"),
+            h("select", {
+              style: styles.input,
+              value: state.reasoning,
+              disabled,
+              onChange: (event: { target: { value: string } }) => {
+                props.setReasoning(event.target.value as ReasoningReplay);
+              },
+            },
+            h("option", { value: "none" }, t("reasoning.none")),
+            h("option", { value: "last" }, t("reasoning.last")),
+            h("option", { value: "all" }, t("reasoning.all"))))),
+        h("p", { style: styles.hint }, t("limits", {
+          output: MAX_OUTPUT_TOKENS_LIMIT, idle: MAX_STREAM_TIMEOUT_MS, delta: MAX_STREAM_DELTA_MS,
+        })),
+        h("label", { style: styles.row },
+          h("input", {
+            type: "checkbox",
+            checked: state.debug,
+            disabled,
+            onChange: () => { props.setDebug(!state.debug); },
+          }),
+          h("span", null, t("debug"))),
+      ),
+      state.failure === undefined ? null : failureLine(state.failure),
+      saveControl(),
+    );
+  }
 }
 
 /**
@@ -369,7 +364,30 @@ function QoderConfigCard(props: BundleConfigProps): Element {
  * @param ctx - the browser plugin context.
  */
 export function apply(ctx: ClientContext): void {
-  credentialsRemote = ctx.remote.credentials;
+  ctx.effect(() => ctx.locale.register(LOCALE_NS, { zh, en }), "llm-qoder: dictionaries");
+  // Bound here rather than declared on the registration: the card owns this one
+  // dictionary namespace, so handing `t` through its inject face keeps the slot
+  // registration free of a locale dependency the page does not need to know about.
+  const t = ctx.locale.bind(LOCALE_NS);
+  const controller = new QoderCardController({
+    form: ctx.configForms.get(NS),
+    credentials: {
+      // The Remote answers with a result envelope; the controller's contract is
+      // the value or a thrown failure, so a refusal becomes an error the card
+      // can show instead of a silent no-op.
+      async describe(refs) {
+        const result = await ctx.remote.credentials.describe(refs);
+        if (!result.ok) throw new Error(refusalOf(result));
+        return result.value ?? {};
+      },
+      async set(ref, value) {
+        const result = await ctx.remote.credentials.set(ref, value);
+        if (!result.ok) throw new Error(refusalOf(result));
+      },
+    },
+  });
+  ctx.effect(() => () => { controller.dispose(); }, "llm-qoder: configuration controller");
+  const face: QoderCardFace & { t: Translate } = { ...controller.face(), t };
   // The page renders `plugins.bundle.config` for a bundle only while a client
   // plugin claims that package name, and `whileServed` keeps the claim alive
   // only while the Host actually serves this plugin's settings entry.
@@ -377,6 +395,7 @@ export function apply(ctx: ClientContext): void {
     () => ctx.configForms.whileServed([NS], () => ctx.slots.inject("plugins.bundle.config", () => ctx.slots.register({
       name: "plugins.bundle.config",
       key: BUNDLE,
+      inject: () => face,
     }, QoderConfigCard))),
     "llm-qoder: configuration card",
   );
