@@ -65,6 +65,7 @@ pnpm dsh plugin --profile web add /绝对路径/dsh-qoder
 卡片提供：
 
 - **每个区域的访问令牌**（`Qoder` / `Qoder CN`），写入 DSH 凭据存储的 `QODER_API_KEY` / `QODER_CN_API_KEY` 引用，不落到配置文件；留空表示不修改，页面只显示「已配置」而从不回显令牌。保存令牌即可让该区域的模型出现在模型选择器里——模型列表跟随**令牌**，不再需要任何「添加供应商」步骤。
+- **本期额度**：每个区域各自一行，显示已用/总量、剩余量（带 Qoder 自己的单位）、到期时间。打开卡片读一次，之后靠「刷新额度」按钮主动刷新；Host 侧缓存 30 秒，切换账号（存入新令牌）会立刻作废旧账号的缓存。这是**账号整期**的数字，包含其他 Qoder 客户端，不是本次会话的消耗。
 - **上下文窗口三选一**：目录默认档 / 目录最大档 / 自定义，与 pi 插件的 `/qoder-settings context <default|max|tokens>` 同一套语义。显式值超过目录公布的最大档会被夹到该档（上游不接受更大的窗口）。
 - **其余额度选项**：输出上限、思考回放、流空闲超时、增量合并间隔、`debug`，与「配置」一节的字段一一对应。
 
@@ -73,7 +74,7 @@ pnpm dsh plugin --profile web add /绝对路径/dsh-qoder
 - 浏览器半是 `src/client/`，构建成 DSH 客户端模块系统要求的 lazy-CJS 产物 `lib/client.js`（`npm run build` 生成）；只把 `react` 留作外部依赖，其余全部内联。
 - `plugins.bundle.config` 是按**包名**取键的槽位，页面**不会**给它传 `form`（只有 `plugins.item` / `plugins.row.config` 会拿到 `ConfigPageForm`，因为它们的键就是设置命名空间）。所以卡片自己通过 `ctx.configForms.get("llm-qoder")` 绑定该插件的 Config 表单并跟随它的快照，而不是等页面施舍 `form`。
 - `ctx.remote.credentials` 的方法返回的是 `RemoteResult` 信封（`{ok, value}` / `{ok, error}`），失败不是异常。浏览器半统一解包，被拒绝的写入才会以错误显示，而不是当成成功。
-- Host 侧不新增任何 HTTP 路由，也不改 DSH 源码；卡片通过 `ctx.configForms` 写配置、通过 `ctx.remote.credentials` 写令牌，都是 DSH 已有的服务。
+- 额度由 Host 提供，浏览器半不接触令牌：本 bundle 没有生成 Typert 产物，无法注册 `ctx.remote.*` 命名空间，所以用一个已认证的普通路由 `GET /qoder/quota`（需要已登录 Peer）返回数字；`?refresh=1` 表示忽略 30 秒缓存强制上游读取。没有 webServer 的组合（headless/SDK/ACP）不注册该路由，卡片会显示「此部署没有 Web 服务，无法读取额度」而不是报错。Host 侧除了这个路由之外不新增任何 HTTP 接口，也不改 DSH 源码。
 - bundle 被关闭时配置页一并消失，因为 DSH 的 client 模块系统按 Loader 行装载浏览器半。
 - 卡片文案走客户端 locale 服务（命名空间 `llmQoder`，内置中英两套），跟随界面语言，不在代码里硬编码中文。
 - 页面正文只放这张卡片：长描述来自 `locale/*.json` 的 `meta.detail`，指向 `docs/plugin-page.md`，不再把整份 README 摆到插件页上。
@@ -188,9 +189,13 @@ Host 侧安装后立即生效。在 **Plugins → `@local/dsh-llm-qoder`** 里�
 | `src/pi-context.ts` | DSH 消息与工具 → pi transcript |
 | `src/qoder/settings.ts` | Credit/流式选项：volatile Config schema + 每请求解析 |
 | `src/qoder/limits.ts` | Host 与浏览器半共用的上下限/默认值（避免两边漂移） |
-| `src/client/index.ts` | 浏览器半：Plugins 页里的配置卡片（令牌 + 额度选项） |
+| `src/client/index.ts` | 浏览器半：Plugins 页里的配置卡片（令牌 + 本期额度 + 额度选项） |
 | `src/client/form.ts` | 卡片的状态、校验与保存顺序（纯逻辑 + 控制器） |
+| `src/client/quota.ts` | 卡片的本期额度读取与格式化 |
 | `src/client/locales.ts` | 卡片文案（中/英），注册进客户端 locale 服务 |
+| `src/qoder/quota.ts` | 账号本期额度的缓存与上游读取（每区域、按令牌失效） |
+| `src/qoder/quota-shared.ts` | Host 与浏览器半共用的额度结构与路由名（浏览器安全） |
+| `src/quota-route.ts` | `GET /qoder/quota` 路由；无 webServer 时不注册 |
 | `docs/plugin-page.md` | 插件页正文：一句话说明，正文其余交给卡片 |
 | `src/stream-bridge.ts` | pi 事件 → DSH `StreamChunk` |
 | `src/qoder/` | 自包含的 Qoder 协议实现（含 `pi-ai.ts` 本地类型/辅助函数，无外部运行时依赖） |
@@ -201,12 +206,17 @@ Host 侧安装后立即生效。在 **Plugins → `@local/dsh-llm-qoder`** 里�
 node build.mjs
 node scripts/config-card-smoke.mjs                   # 表单规则 + 模型列表 gate（离线）
 node scripts/client-card-smoke.mjs                   # 浏览器半的接线（离线）
+node scripts/quota-smoke.mjs                         # 额度路由（离线，假 fetch）
 node scripts/smoke.mjs                               # 实时目录（需要令牌）
 QODER_API_KEY=... QODER_SMOKE_STREAM=1 node scripts/smoke.mjs  # 真实流式
 ```
 
+`npm run check` 依次跑前三个离线脚本。
+
 `scripts/config-card-smoke.mjs` 驱动配置卡片背后的纯逻辑（三种窗口模式、超限拒绝、零值增量间隔、只写真正改动的字段、令牌写入），并用假服务验证「模型列表跟随令牌而非任何供应商条目」。
 
-`scripts/client-card-smoke.mjs` 按 DSH 客户端模块系统的方式装载 `lib/client.js`（`window.__ModuleLoader__.load` + 注入的 `require`），把 `react`、`ctx.slots`、`ctx.configForms`、`ctx.remote.credentials`、`ctx.locale` 换成假服务，再渲染卡片并点击保存。它守住三件曾经坏掉的事：卡片能拿到插件的 Config 表单、令牌输入可写并真的写入凭据、被拒绝的 `RemoteResult` 会显示成错误而不是静默成功。
+`scripts/client-card-smoke.mjs` 按 DSH 客户端模块系统的方式装载 `lib/client.js`（`window.__ModuleLoader__.load` + 注入的 `require`），把 `react`、`ctx.slots`、`ctx.configForms`、`ctx.remote.credentials`、`ctx.locale`、`fetch` 换成假服务，再渲染卡片并点击保存。它守住三件曾经坏掉的事：卡片能拿到插件的 Config 表单、令牌输入可写并真的写入凭据、被拒绝的 `RemoteResult` 会显示成错误而不是静默成功；同时验证额度块只在挂载时读一次、点「刷新额度」才再次请求 `qoder/quota?refresh=1`、失败时保留已显示的余额。
+
+`scripts/quota-smoke.mjs` 用假 `fetch` 驱动 Host 的 `GET /qoder/quota`：一个区域有令牌、另一个没有，缓存 TTL 内复用同一次上游读取，失败时返回 `stale` 并保留上次快照，非 GET 返回 405，没有 webServer 的组合不注册路由。
 
 模型目录、真实流式和 DSH `headless` 端到端均已验证。`headless` profile 默认不挂载 settings/credentials，因此流式冒烟需要显式传 `QODER_API_KEY`/`QODER_ACCESS_TOKEN`；这是 DSH 启动环境变量，不涉及 pi 配置。
