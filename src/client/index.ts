@@ -194,6 +194,9 @@ function QoderConfigCard(props: CardProps): Element {
   const h = React.createElement;
   const { t } = props;
   const state: QoderCardState = props.useQoderCard((snapshot: QoderCardState) => snapshot);
+  // The first balance read happens when the card is actually shown, not when
+  // the bundle's client half activates; the controller makes it idempotent.
+  props.ensureQuotaRead();
 
   if (props.view === "summary") return h("span", null, t("summary"));
 

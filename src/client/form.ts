@@ -325,6 +325,8 @@ export interface QoderCardActions {
   save(): Promise<void>;
   /** Read the account quota again; `force` asks upstream even inside its cache window. */
   refreshQuota(force?: boolean): Promise<void>;
+  /** Ask for the first quota read, once, when the card is rendered. */
+  ensureQuotaRead(): void;
 }
 
 /** The controller face the card's slot registration injects. */
@@ -369,11 +371,11 @@ export class QoderCardController implements QoderCardActions {
     // carries the token rows, the knobs, and the balance.
     this.unsubscribeQuota = options.quota?.subscribe(() => { this.derive(); });
     void this.refreshTokens();
-    // First read happens once, when the card mounts; a refresh afterwards is an
-    // explicit click, because a number that changed on its own would re-render
-    // the whole page while someone is editing a field. Deferred by a microtask
-    // so construction never awaits the network.
-    if (options.quota) void Promise.resolve().then(() => this.refreshQuota());
+    // No read here: this controller is built when the bundle's client half
+    // activates, which is not the same as someone opening the card. The card's
+    // first render schedules it (see `ensureQuotaRead`), and every later read is
+    // an explicit click — a figure that changed on its own would re-render the
+    // page while a field is being edited.
   }
 
   /**
@@ -391,6 +393,7 @@ export class QoderCardController implements QoderCardActions {
       setDebug: (value) => { this.setDebug(value); },
       save: () => this.save(),
       refreshQuota: (force) => this.refreshQuota(force),
+      ensureQuotaRead: () => { this.ensureQuotaRead(); },
     };
   }
 
@@ -419,6 +422,21 @@ export class QoderCardController implements QoderCardActions {
    */
   refreshQuota(force = false): Promise<void> {
     return this.options.quota?.refresh(force) ?? Promise.resolve();
+  }
+
+  /**
+   * Ask for the first quota read if the card has not asked yet.
+   *
+   * Called from the card's render, so the read happens when someone opens the
+   * card rather than when the bundle activates. Deferred to a microtask because
+   * publishing a snapshot mid-render would re-enter the subscription; the call
+   * is idempotent — the reader dedupes in-flight reads and leaves `idle` once it
+   * has one — so repeated renders before that microtask cost nothing.
+   * @returns nothing; the snapshot publishes when the read settles.
+   */
+  ensureQuotaRead(): void {
+    if (this.options.quota === undefined || this.options.quota.getSnapshot().status !== "idle") return;
+    void Promise.resolve().then(() => this.refreshQuota());
   }
 
   editToken(ref: string, value: string): void {

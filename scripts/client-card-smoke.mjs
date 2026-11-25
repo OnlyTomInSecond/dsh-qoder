@@ -157,6 +157,10 @@ const face = cardRegistration?.options.inject?.();
 check("the registration injects the card face", face !== undefined && typeof face.save === "function");
 check("the face exposes the snapshot hook", face !== undefined && face.hooks !== undefined && face.hooks.qoderCard !== undefined);
 check("the snapshot hook is not called as a function type twice", typeof face?.hooks?.qoderCard.getSnapshot === "function");
+// Activating the client half is not someone opening the card: the balance is
+// read on the first render, not at mount.
+await (async () => { for (let i = 0; i < 3; i += 1) await new Promise((resolve) => setTimeout(resolve)); })();
+check("activating the client half reads no quota", quotaFetch.calls.length === 0, JSON.stringify(quotaFetch.calls));
 
 /* ---- the rendered card ------------------------------------------------- */
 
@@ -185,7 +189,7 @@ check("summary renders one line", typeof render("summary") === "object" && rende
 /** Let the deferred first read and its snapshot publication settle. */
 const settle = async () => { for (let i = 0; i < 5; i += 1) await new Promise((resolve) => setTimeout(resolve)); };
 
-// The card reads the balance once on mount, from the Host's own route.
+// The first render reads the balance, from the Host's own route.
 await settle();
 check("the card reads the quota route", quotaFetch.calls[0] === "qoder/quota", JSON.stringify(quotaFetch.calls));
 check("a missing route reports the deployment as unserved",
