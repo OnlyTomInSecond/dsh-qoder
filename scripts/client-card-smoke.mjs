@@ -241,6 +241,29 @@ check("a zero delta interval is written", lastOps.some(([, path, value]) => path
 check("a cleared output cap writes nothing", !lastOps.some(([, path]) => path === "maxOutputTokens"), JSON.stringify(lastOps));
 check("the field renders the stored cap again", outputInput()?.props.value === "4096", JSON.stringify(outputInput()?.props.value));
 
+// Switching the context window and saving must reach the Host. This is the
+// interaction that used to die silently: `draftOps` read a `windowText` field the
+// controller never supplied, so any mode *change* threw before the write, and
+// the card — which calls `void save()` — showed nothing at all.
+const radioInputs = () => walk(render("page")).filter((node) => node.type === "input" && node.props.type === "radio");
+check("the page offers three window modes", radioInputs().length === 3, String(radioInputs().length));
+const opsBeforeMode = mutateOps.length;
+const savedBeforeMode = calls.set.length;
+radioInputs()[1].props.onChange({ target: { checked: true } });
+check("choosing a mode stages it without writing", mutateOps.length === opsBeforeMode && calls.set.length === savedBeforeMode);
+await face.save();
+const afterMode = face.hooks.qoderCard.getSnapshot();
+check("a mode change writes the Config section", mutateOps.length === opsBeforeMode + 1,
+  `${mutateOps.length - opsBeforeMode} write(s)`);
+const modeOps = mutateOps.at(-1).ops.map((op) => [op.op, op.path.join("."), op.value]);
+check("the max mode sets its flag", modeOps.some(([, path, value]) => path === "useMaxContext" && value === true),
+  JSON.stringify(modeOps));
+check("the max mode drops any explicit window", modeOps.some(([op, path]) => op === "unset" && path === "contextWindow"),
+  JSON.stringify(modeOps));
+check("a mode change reports no failure", afterMode.failure === undefined, JSON.stringify(afterMode.failure));
+check("a mode change reports success", afterMode.saved === true, JSON.stringify(afterMode));
+check("the max radio is the selected one", radioInputs()[1].props.checked === true);
+
 // A Host that does not serve the namespace keeps the knobs closed but the
 // credential rows usable: tokens live in a different store.
 section.set({ status: "unavailable", writable: false });
@@ -259,6 +282,19 @@ check("an unserved save stores the token", calls.set.length === setBefore + 1 &&
   JSON.stringify(calls.set.slice(setBefore)));
 check("an unserved save leaves the Config section alone", mutateOps.length === opsBefore, String(mutateOps.length));
 check("an unserved save reports success", face.hooks.qoderCard.getSnapshot().saved === true);
+
+// A knob edit the deployment cannot write must not answer "saved": the card used
+// to claim success for a change that never left the browser.
+// The degraded card renders no radios, so the controller action stages it.
+face.setMode("catalog");
+const strandedOps = mutateOps.length;
+await face.save();
+const stranded = face.hooks.qoderCard.getSnapshot();
+check("a stranded knob edit is reported",
+  stranded.failure?.kind === "problem" && stranded.failure.problem.kind === "notServed",
+  JSON.stringify(stranded.failure));
+check("a stranded knob edit claims no success", stranded.saved === false, JSON.stringify(stranded.saved));
+check("a stranded knob edit writes nothing", mutateOps.length === strandedOps, String(mutateOps.length));
 
 console.log(failures === 0 ? "client card: OK" : `client card: ${failures} failure(s)`);
 process.exit(failures === 0 ? 0 : 1);

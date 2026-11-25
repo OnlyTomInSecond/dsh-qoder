@@ -165,14 +165,13 @@ export function numberAt(text: string, min = 1): number | undefined {
   return Number.isInteger(value) && value >= min ? value : undefined;
 }
 
-/** Everything one submission carries. */
-export interface CardDraft {
-  mode: WindowMode;
-  windowText: string;
-  fields: Readonly<Record<NumberFieldKey, string>>;
-  reasoning: ReasoningReplay;
-  debug: boolean;
-}
+/**
+ * Everything one submission carries: the editable slice of the card's own
+ * snapshot. Derived from {@link QoderCardState} rather than restated, because a
+ * duplicated shape is how the window field once drifted from `window` to
+ * `windowText` and made every mode change throw.
+ */
+export type CardDraft = Pick<QoderCardState, "mode" | "window" | "fields" | "reasoning" | "debug">;
 
 /** Format a stored numeric value for its input; an absent one renders empty so the placeholder shows. */
 function textOf(value: unknown): string {
@@ -187,7 +186,9 @@ export type CardProblem =
   | { kind: "notInteger"; field: QoderLocaleKey; min: number }
   | { kind: "overMax"; field: QoderLocaleKey; max: number }
   /** The Host refused the Config write, typically on a stale revision. */
-  | { kind: "conflict" };
+  | { kind: "conflict" }
+  /** This deployment serves no writable Config section, so a knob edit cannot land. */
+  | { kind: "notServed" };
 
 /** The locale key naming one numeric field in a message. */
 const FIELD_KEY: Record<NumberFieldKey, QoderLocaleKey> = {
@@ -217,7 +218,7 @@ export function draftOps(
   const ops: SettingsPathOp[] = [];
   const mode = windowModeOf(current);
   if (mode !== draft.mode || draft.mode === "custom") {
-    const window = numberAt(draft.windowText);
+    const window = numberAt(draft.window);
     // A custom window is always validated, even when the mode is unchanged:
     // a blank or fractional input must never reach the Host.
     if (draft.mode === "custom" && window === undefined) {
@@ -299,9 +300,8 @@ export interface CardObservable<T> {
   subscribe(listener: () => void): () => void;
 }
 
-/** The controller face the card's slot registration injects. */
-export interface QoderCardFace {
-  hooks: { qoderCard: CardObservable<QoderCardState> };
+/** The edit actions the controller offers; the observable face wraps these. */
+export interface QoderCardActions {
   /** Stage one token value; a blank value leaves the stored one alone. */
   editToken(ref: string, value: string): void;
   setMode(mode: WindowMode): void;
@@ -313,14 +313,23 @@ export interface QoderCardFace {
   save(): Promise<void>;
 }
 
+/** The controller face the card's slot registration injects. */
+export interface QoderCardFace extends QoderCardActions {
+  hooks: { qoderCard: CardObservable<QoderCardState> };
+}
+
 /**
  * Bridges the Config form, the credential Remote, and one staged draft onto a
  * single snapshot the card renders.
  *
  * A save writes credentials BEFORE the Config section, so a token that fails to
  * store never leaves knob edits applied for a region that still has no token.
+ *
+ * Every failure lands in the snapshot rather than rejecting: the card triggers
+ * a save with `void save()`, so a rejected promise would leave the button
+ * silently inert with no way to tell what happened.
  */
-export class QoderCardController implements QoderCardFace {
+export class QoderCardController implements QoderCardActions {
   private readonly listeners = new Set<() => void>();
   private readonly drafts = new Map<string, string>();
   private readonly numbers = new Map<NumberFieldKey, string>();
@@ -429,35 +438,50 @@ export class QoderCardController implements QoderCardFace {
     const current = valuesOf(snapshot.value);
     const stored = tokenDrafts(Object.fromEntries(this.drafts));
     // A deployment that does not serve the Config section (or a read-only
-    // document) still owns a credential store, so the card saves tokens there
-    // and leaves the section alone rather than failing the whole save.
+    // document) still owns a credential store, so tokens are saved there while
+    // the section stays untouched.
     const configurable = snapshot.status === "ready" && snapshot.writable;
-    // Validation runs before any write, so a refused knob cannot leave half a
-    // save behind: the token stored and the Config section untouched.
-    const plan = draftOps(this.state, configurable ? current : {});
     this.saved = false;
-    if ("problem" in plan && configurable) {
+    this.failure = undefined;
+    // Planning runs before any write, so a refused knob cannot leave half a
+    // save behind: the token stored and the Config section untouched. It is
+    // planned against the resolved values even when the section is unreadable,
+    // so an edit the card could never write is reported rather than dropped.
+    let plan: { ops: SettingsPathOp[] } | { problem: CardProblem };
+    try {
+      plan = draftOps(this.state, current);
+    } catch (error) {
+      // Planning is pure, so a throw is a defect, not bad input. Reporting it
+      // keeps the card diagnosable instead of silently doing nothing.
+      this.failure = { kind: "message", message: error instanceof Error ? error.message : String(error) };
+      this.derive();
+      return;
+    }
+    if ("problem" in plan) {
       this.failure = { kind: "problem", problem: plan.problem };
       this.derive();
       return;
     }
-    const ops = "problem" in plan ? [] : plan.ops;
-    if (stored.length === 0 && (ops.length === 0 || !configurable)) {
+    // An edit this deployment cannot accept must not answer "saved": the card
+    // would claim a change that never reached the Host.
+    const stranded = !configurable && plan.ops.length > 0;
+    const ops = configurable ? plan.ops : [];
+    if (stored.length === 0 && ops.length === 0) {
       // Nothing to write: report success so the card settles instead of
       // leaving a save button that would only repeat the no-op.
       this.clearDrafts();
-      this.saved = true;
+      this.saved = !stranded;
+      if (stranded) this.failure = { kind: "problem", problem: { kind: "notServed" } };
       this.derive();
       return;
     }
-    this.failure = undefined;
     this.busy = true;
     this.derive();
     try {
       // Credentials first: the token is what makes the model list non-empty, so
       // it must land before the Config write that changes knobs for it.
       for (const token of stored) await this.options.credentials.set(token.ref, token.value);
-      if (configurable && ops.length > 0) {
+      if (ops.length > 0) {
         const accepted = await this.options.form.mutate(ops);
         if (!accepted) {
           this.failure = { kind: "problem", problem: { kind: "conflict" } };
@@ -467,7 +491,8 @@ export class QoderCardController implements QoderCardFace {
         }
       }
       this.clearDrafts();
-      this.saved = true;
+      this.saved = !stranded;
+      if (stranded) this.failure = { kind: "problem", problem: { kind: "notServed" } };
       if (stored.length > 0) await this.refreshTokens();
     } catch (error) {
       this.failure = { kind: "message", message: error instanceof Error ? error.message : String(error) };

@@ -40,6 +40,7 @@ export type QoderLocaleKey =
   | "saving"
   | "saved"
   | "conflict"
+  | "notServedEdit"
   | "notServed"
   | "loading"
   | "problem.integer"
@@ -85,6 +86,7 @@ export const zh: QoderLocaleDict = {
   saving: "保存中…",
   saved: "已保存。令牌与选项下一次请求即生效。",
   conflict: "设置未被接受，可能已被其他页面修改，请稍后重试。",
+  notServedEdit: "这个部署没有提供可写的配置项，选项未保存。",
   notServed: "此部署未对外提供该插件的设置；访问令牌仍可单独保存。",
   loading: "正在读取设置…",
   "problem.integer": "{field}需要一个不小于 {min} 的整数。",
@@ -128,6 +130,7 @@ export const en: QoderLocaleDict = {
   saving: "Saving…",
   saved: "Saved. Tokens and options apply to the next request.",
   conflict: "The change was refused. Another page may have edited these settings; try again.",
+  notServedEdit: "This deployment serves no writable Config section, so the options were not saved.",
   notServed: "This deployment does not serve the plugin's settings; an access token can still be saved.",
   loading: "Reading settings…",
   "problem.integer": "{field} needs an integer of at least {min}.",

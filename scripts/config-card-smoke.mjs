@@ -14,9 +14,13 @@ function check(label, condition, detail) {
   console.error(`FAIL ${label}${detail === undefined ? "" : `: ${detail}`}`);
 }
 
-/** A draft with every field at its default, overridden per call. */
+/**
+ * A draft with every field at its default, overridden per call. The shape is the
+ * card's own snapshot slice, so a rename in either place fails here rather than
+ * in the browser: `window` (not `windowText`) is what the controller hands over.
+ */
 const draft = (overrides = {}) => ({
-  mode: "catalog", windowText: "", fields: { output: "", idle: "", delta: "" },
+  mode: "catalog", window: "", fields: { output: "", idle: "", delta: "" },
   reasoning: "none", debug: false, ...overrides,
 });
 
@@ -37,12 +41,12 @@ const opAt = (ops, path) => ops.find((op) => op.path[0] === path);
   check("max sets the flag", opAt(ops, "useMaxContext")?.value === true);
 }
 {
-  const { ops } = draftOps(draft({ mode: "custom", windowText: "400000" }), {});
+  const { ops } = draftOps(draft({ mode: "custom", window: "400000" }), {});
   check("custom sets the window", opAt(ops, "contextWindow")?.value === 400000);
   check("custom clears the max flag", opAt(ops, "useMaxContext")?.value === false);
 }
 {
-  const { ops } = draftOps(draft({ mode: "custom", windowText: "400000" }), { contextWindow: 200000 });
+  const { ops } = draftOps(draft({ mode: "custom", window: "400000" }), { contextWindow: 200000 });
   check("an edited custom window rewrites only the window", opAt(ops, "contextWindow")?.value === 400000
     && opAt(ops, "useMaxContext") === undefined, JSON.stringify(ops));
 }
@@ -52,13 +56,13 @@ const opAt = (ops, path) => ops.find((op) => op.path[0] === path);
     && !opAt(plan.ops, "contextWindow") && !opAt(plan.ops, "useMaxContext"), JSON.stringify(plan));
 }
 {
-  const plan = draftOps(draft({ mode: "custom", windowText: "" }), {});
+  const plan = draftOps(draft({ mode: "custom", window: "" }), {});
   check("custom without a number is refused",
     "problem" in plan && plan.problem.kind === "notInteger" && plan.problem.field === "field.window", JSON.stringify(plan));
-  const fractional = draftOps(draft({ mode: "custom", windowText: "1.5" }), {});
+  const fractional = draftOps(draft({ mode: "custom", window: "1.5" }), {});
   check("a fractional window is refused", "problem" in fractional, JSON.stringify(fractional));
   // A custom window stays validated even when the stored mode is already custom.
-  const unchanged = draftOps(draft({ mode: "custom", windowText: "" }), { contextWindow: 200000 });
+  const unchanged = draftOps(draft({ mode: "custom", window: "" }), { contextWindow: 200000 });
   check("an emptied custom window is still refused", "problem" in unchanged, JSON.stringify(unchanged));
 }
 

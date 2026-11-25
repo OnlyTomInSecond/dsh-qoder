@@ -172,11 +172,14 @@ const styles = {
 interface CardProps extends QoderCardFace {
   view?: "summary" | "page";
   t: Translate;
+  /** The renderer turns the injected `hooks.qoderCard` observable into this hook. */
+  useQoderCard: <T>(selector: (snapshot: QoderCardState) => T) => T;
 }
 
 /** Render one structured problem in the active language. */
 function problemText(problem: CardProblem, t: Translate): string {
   if (problem.kind === "conflict") return t("conflict");
+  if (problem.kind === "notServed") return t("notServedEdit");
   if (problem.kind === "overMax") return t("problem.max", { field: t(problem.field), max: problem.max });
   return t("problem.integer", { field: t(problem.field), min: problem.min });
 }
