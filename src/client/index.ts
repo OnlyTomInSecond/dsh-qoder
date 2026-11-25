@@ -277,8 +277,10 @@ function QoderConfigCard(props: CardProps): Element {
     { style: styles.card },
     h("p", { style: styles.hint }, state.status === "loading" ? t("loading") : t("notServed")),
     // Credentials are a separate store: a deployment that serves no Config
-    // section can still hold a token, so the rows stay.
+    // section can still hold a token, so the rows stay — and so does the quota,
+    // which is the Host's other store and needs no Config at all.
     ...TOKEN_REFS.map(tokenRow),
+    quotaSection(),
     state.failure === undefined ? null : failureLine(state.failure),
     saveControl(),
   );

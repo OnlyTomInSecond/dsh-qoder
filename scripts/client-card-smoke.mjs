@@ -345,6 +345,10 @@ check("tokens stay writable without a served namespace", unservedInputs.every((n
   JSON.stringify(unservedInputs.map((node) => node.props.disabled)));
 const saveButton = walk(render("page")).find((node) => node.type === "button");
 check("a token can still be saved", saveButton.props.disabled === false);
+// The quota block is the Host's other store, so it survives a deployment that
+// serves no writable Config section.
+check("the quota block survives an unserved Config section",
+  walk(render("page")).filter((node) => node.props?.["data-qoder-quota"] !== undefined).length === 2);
 const opsBefore = mutateOps.length;
 const setBefore = calls.set.length;
 unservedInputs[0].props.onChange({ target: { value: "pt-orphan" } });
