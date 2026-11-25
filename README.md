@@ -74,7 +74,7 @@ pnpm dsh plugin --profile web add /绝对路径/dsh-qoder
 - 浏览器半是 `src/client/`，构建成 DSH 客户端模块系统要求的 lazy-CJS 产物 `lib/client.js`（`npm run build` 生成）；只把 `react` 留作外部依赖，其余全部内联。
 - `plugins.bundle.config` 是按**包名**取键的槽位，页面**不会**给它传 `form`（只有 `plugins.item` / `plugins.row.config` 会拿到 `ConfigPageForm`，因为它们的键就是设置命名空间）。所以卡片自己通过 `ctx.configForms.get("llm-qoder")` 绑定该插件的 Config 表单并跟随它的快照，而不是等页面施舍 `form`。
 - `ctx.remote.credentials` 的方法返回的是 `RemoteResult` 信封（`{ok, value}` / `{ok, error}`），失败不是异常。浏览器半统一解包，被拒绝的写入才会以错误显示，而不是当成成功。
-- 额度由 Host 提供，浏览器半不接触令牌：本 bundle 没有生成 Typert 产物，无法注册 `ctx.remote.*` 命名空间，所以用一个已认证的普通路由 `GET /qoder/quota`（需要已登录 Peer）返回数字；`?refresh=1` 表示忽略 30 秒缓存强制上游读取。没有 webServer 的组合（headless/SDK/ACP）不注册该路由，卡片会显示「此部署没有 Web 服务，无法读取额度」而不是报错。Host 侧除了这个路由之外不新增任何 HTTP 接口，也不改 DSH 源码。
+- 额度由 Host 提供，浏览器半不接触令牌：本 bundle 没有生成 Typert 产物，无法注册 `ctx.remote.*` 命名空间，所以用一个普通路由 `GET /qoder/quota` 返回数字。该路由只答 owner：`auth: required` 会放行任何已认证 Peer，而配对的**别人**的浏览器也是已认证的，额度是本账号的数据，所以处理函数自己再查一次 `peer.principal.kind === "owner"`（与 DSH 自己的 owner-only 路由同一道栅栏），其他人得到 403。`?refresh=1` 表示忽略 30 秒缓存强制上游读取。没有 webServer 的组合（headless/SDK/ACP）不注册该路由，卡片会显示「此部署没有 Web 服务，无法读取额度」而不是报错。Host 侧除了这个路由之外不新增任何 HTTP 接口，也不改 DSH 源码。
 - bundle 被关闭时配置页一并消失，因为 DSH 的 client 模块系统按 Loader 行装载浏览器半。
 - 卡片文案走客户端 locale 服务（命名空间 `llmQoder`，内置中英两套），跟随界面语言，不在代码里硬编码中文。
 - 页面正文只放这张卡片：长描述来自 `locale/*.json` 的 `meta.detail`，指向 `docs/plugin-page.md`，不再把整份 README 摆到插件页上。
@@ -215,8 +215,8 @@ QODER_API_KEY=... QODER_SMOKE_STREAM=1 node scripts/smoke.mjs  # 真实流式
 
 `scripts/config-card-smoke.mjs` 驱动配置卡片背后的纯逻辑（三种窗口模式、超限拒绝、零值增量间隔、只写真正改动的字段、令牌写入），并用假服务验证「模型列表跟随令牌而非任何供应商条目」。
 
-`scripts/client-card-smoke.mjs` 按 DSH 客户端模块系统的方式装载 `lib/client.js`（`window.__ModuleLoader__.load` + 注入的 `require`），把 `react`、`ctx.slots`、`ctx.configForms`、`ctx.remote.credentials`、`ctx.locale`、`fetch` 换成假服务，再渲染卡片并点击保存。它守住三件曾经坏掉的事：卡片能拿到插件的 Config 表单、令牌输入可写并真的写入凭据、被拒绝的 `RemoteResult` 会显示成错误而不是静默成功；同时验证额度块只在挂载时读一次、点「刷新额度」才再次请求 `qoder/quota?refresh=1`、失败时保留已显示的余额。
+`scripts/client-card-smoke.mjs` 按 DSH 客户端模块系统的方式装载 `lib/client.js`（`window.__ModuleLoader__.load` + 注入的 `require`），把 `react`、`ctx.slots`、`ctx.configForms`、`ctx.remote.credentials`、`ctx.locale`、`fetch` 换成假服务，再渲染卡片并点击保存。它守住三件曾经坏掉的事：卡片能拿到插件的 Config 表单、令牌输入可写并真的写入凭据、被拒绝的 `RemoteResult` 会显示成错误而不是静默成功；同时验证额度块只在**打开页面视图**时读一次（行内那行 `summary` 不读）、点「刷新额度」才再次请求 `qoder/quota?refresh=1`、失败时保留已显示的余额、首帧的 `idle` 显示为「读取中」而不是「此区域没有令牌」、企业账号（只有组织资源包、没有个人额度）把组织资源包放在主行。
 
-`scripts/quota-smoke.mjs` 用假 `fetch` 驱动 Host 的 `GET /qoder/quota`：一个区域有令牌、另一个没有，缓存 TTL 内复用同一次上游读取，失败时返回 `stale` 并保留上次快照，非 GET 返回 405，没有 webServer 的组合不注册路由。
+`scripts/quota-smoke.mjs` 用假 `fetch` 驱动 Host 的 `GET /qoder/quota`：一个区域有令牌、另一个没有，缓存 TTL 内复用同一次上游读取，失败时返回 `stale` 并保留上次快照，非 GET 返回 405，非 owner 的 Peer 返回 403，没有 webServer 的组合不注册路由。
 
 模型目录、真实流式和 DSH `headless` 端到端均已验证。`headless` profile 默认不挂载 settings/credentials，因此流式冒烟需要显式传 `QODER_API_KEY`/`QODER_ACCESS_TOKEN`；这是 DSH 启动环境变量，不涉及 pi 配置。
