@@ -9,15 +9,13 @@
  * Two independent stores carry a save:
  *
  *   the plugin's Config section (`ctx.configForms`)  the window mode, output
- *       cap, replay policy, stream timeouts, and `debug` — plus the
- *       `providers.<region>` entry a stored token marks as added
+ *       cap, replay policy, stream timeouts, and `debug`
  *   `ctx.remote.credentials`                         the token values
  *       themselves, under `QODER_API_KEY` / `QODER_CN_API_KEY`
  *
  * The Config fields are declared `.volatile()` by the Host plugin, so writing
  * one applies to the next request without a remount — and only volatile paths
- * are writable at all, which is why the profile entry is written as a path op
- * on the (volatile) `providers` dict rather than as part of a plain object.
+ * are writable at all, which is why every edit is a path op.
  */
 import {
   MAX_OUTPUT_TOKENS_LIMIT,
@@ -49,8 +47,6 @@ export interface QoderConfigValues {
   streamIdleTimeoutMs?: number;
   streamDeltaIntervalMs?: number;
   debug?: boolean;
-  /** Provider profiles added through Settings > Models; a dict, so only written regions exist. */
-  providers?: unknown;
 }
 
 /** One region's token reference. */
@@ -64,8 +60,6 @@ export interface TokenRef {
   gateway: string;
   /** Where the person creates a personal access token. */
   patUrl: string;
-  /** What the Host calls this region's provider route / Config profile key. */
-  providerKey: string;
 }
 
 /** Credential references the card writes, one per region, in lookup order. */
@@ -77,7 +71,6 @@ export const TOKEN_REFS: readonly TokenRef[] = [
     aliases: ["QODER_ACCESS_TOKEN", "QODER_API_KEY", "QODER_PERSONAL_ACCESS_TOKEN", "QODER_PAT"],
     gateway: "https://api3.qoder.sh/",
     patUrl: "https://qoder.com/account/integrations",
-    providerKey: "qoder",
   },
   {
     mode: "cn",
@@ -86,7 +79,6 @@ export const TOKEN_REFS: readonly TokenRef[] = [
     aliases: ["QODERCN_ACCESS_TOKEN", "QODER_CN_API_KEY", "QODERCN_API_KEY", "QODERCN_PERSONAL_ACCESS_TOKEN", "QODERCN_PAT"],
     gateway: "https://gateway.qoder.com.cn/",
     patUrl: "https://qoder.com.cn/account/integrations",
-    providerKey: "qoder-cn",
   },
 ];
 
@@ -262,40 +254,13 @@ export function draftOps(
   return { ops };
 }
 
-/**
- * The profile edits for the tokens this submission stores.
- *
- * `listModels()` answers from the token, but the Models page and
- * `hasProviderApiKey` address a route through its profile entry, so a token
- * typed here also records the profile. A region's entry is only written once,
- * and the write is a path op because only the volatile `providers` dict is
- * editable — `providers` is therefore replaced field by field by the Host, not
- * handed a plain object the non-volatile validator would refuse.
- * @param tokens - the tokens being stored.
- * @param providers - the profiles the Config already holds.
- * @returns the operations that are still needed.
- */
-export function profileOps(
-  tokens: ReadonlyArray<{ mode: "global" | "cn" }>,
-  providers: unknown,
-): SettingsPathOp[] {
-  const existing = providers !== null && typeof providers === "object" ? (providers as Record<string, unknown>) : {};
-  const ops: SettingsPathOp[] = [];
-  for (const token of tokens) {
-    const region = TOKEN_REFS.find((entry) => entry.mode === token.mode);
-    if (region === undefined || existing[region.providerKey] !== undefined) continue;
-    ops.push({ op: "set", path: ["providers", region.providerKey], value: { apiKeyEnv: region.ref } });
-  }
-  return ops;
-}
-
 /** The tokens a submission actually stores; a blank field leaves the stored one alone. */
 export function tokenDrafts(
   drafts: Readonly<Record<string, string>>,
-): ReadonlyArray<{ mode: "global" | "cn"; ref: string; value: string }> {
+): ReadonlyArray<{ ref: string; value: string }> {
   return TOKEN_REFS.flatMap((entry) => {
     const value = drafts[entry.ref]?.trim();
-    return value ? [{ mode: entry.mode, ref: entry.ref, value }] : [];
+    return value ? [{ ref: entry.ref, value }] : [];
   });
 }
 
@@ -352,10 +317,8 @@ export interface QoderCardFace {
  * Bridges the Config form, the credential Remote, and one staged draft onto a
  * single snapshot the card renders.
  *
- * A save writes credentials FIRST and the Config section second, so the last
- * write the Models page observes is the one that makes the provider appear:
- * writing the profile before the token would briefly advertise a route whose
- * `apiKeyEnv` resolves to nothing.
+ * A save writes credentials BEFORE the Config section, so a token that fails to
+ * store never leaves knob edits applied for a region that still has no token.
  */
 export class QoderCardController implements QoderCardFace {
   private readonly listeners = new Set<() => void>();
@@ -478,10 +441,7 @@ export class QoderCardController implements QoderCardFace {
       this.derive();
       return;
     }
-    const ops = [
-      ...("problem" in plan ? [] : plan.ops),
-      ...profileOps(stored, current.providers),
-    ];
+    const ops = "problem" in plan ? [] : plan.ops;
     if (stored.length === 0 && (ops.length === 0 || !configurable)) {
       // Nothing to write: report success so the card settles instead of
       // leaving a save button that would only repeat the no-op.
@@ -494,9 +454,8 @@ export class QoderCardController implements QoderCardFace {
     this.busy = true;
     this.derive();
     try {
-      // Credentials first: the Config write that adds the provider profile is
-      // what makes the Models page list the route, so it must land after the
-      // token the profile names is resolvable.
+      // Credentials first: the token is what makes the model list non-empty, so
+      // it must land before the Config write that changes knobs for it.
       for (const token of stored) await this.options.credentials.set(token.ref, token.value);
       if (configurable && ops.length > 0) {
         const accepted = await this.options.form.mutate(ops);

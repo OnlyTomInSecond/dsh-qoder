@@ -1,12 +1,13 @@
 /**
  * Browser half: the Qoder configuration card on this bundle's Plugins page.
  *
- * DSH's Models page only renders a credential field for the provider families
- * it ships, so a Qoder profile has nowhere to paste a token there. Rather than
- * ask anyone to patch the Models page, this bundle registers into
+ * The card is the plugin's ONLY configuration surface. This bundle keeps Qoder
+ * out of the Models page on purpose (it declares no configurable provider), so
+ * a region is turned on by storing its token here rather than by adding a
+ * provider row there; `listModels()` answers from the token. Registering into
  * `plugins.bundle.config` — the slot the Plugins page reserves for a bundle's
- * own configuration — so both the token and the Credit knobs live in one place
- * the plugin owns.
+ * own configuration — is what gives both the token and the Credit knobs one
+ * place the plugin owns.
  *
  * Three facts shape how the card is wired, and all three differ from the
  * official plugin pages:

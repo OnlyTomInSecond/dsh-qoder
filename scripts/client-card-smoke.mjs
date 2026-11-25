@@ -184,19 +184,13 @@ const afterTyping = walk(render("page")).filter((node) => node.type === "input" 
 check("the typed token shows in its own field", afterTyping[0].props.value === " pt-typed ", JSON.stringify(afterTyping[0].props.value));
 check("the other region keeps its empty field", afterTyping[1].props.value === "");
 
-// Saving writes the credential first, then the Config section with the profile.
+// Saving writes the credential; a save that changes no knob leaves the
+// Config section alone.
 await face.save();
 check("a staged token is stored under its reference", calls.set[0]?.[0] === "QODER_API_KEY", JSON.stringify(calls.set));
 check("the stored token is trimmed", calls.set[0]?.[1] === "pt-typed", JSON.stringify(calls.set));
-check("the save writes the Config section once", mutateOps.length === 1, String(mutateOps.length));
-const written = mutateOps[0].ops.map((op) => [op.op, op.path.join("."), op.value]);
-check("the profile records the region the token belongs to",
-  written.some(([op, path, value]) => op === "set" && path === "providers.qoder" && value?.apiKeyEnv === "QODER_API_KEY"),
-  JSON.stringify(written));
-check("a save that only stores a token writes only the profile",
-  written.length === 1 && written[0][1] === "providers.qoder", JSON.stringify(written));
-check("the save does not fence on the revision it did not read",
-  mutateOps[0].revision === undefined, String(mutateOps[0].revision));
+const written = mutateOps.flatMap((entry) => entry.ops.map((op) => [op.op, op.path.join("."), op.value]));
+check("a save that only stores a token writes no Config field", written.length === 0, JSON.stringify(written));
 check("the saved snapshot reports success", face.hooks.qoderCard.getSnapshot().saved === true);
 check("the saved snapshot clears the staged token",
   face.hooks.qoderCard.getSnapshot().drafts.QODER_API_KEY === undefined);

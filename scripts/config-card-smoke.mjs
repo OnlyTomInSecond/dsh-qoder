@@ -2,7 +2,7 @@
 // network, no DSH install: the rules are pure functions, and the adapter is
 // driven with fake Host services.
 import {
-  MAX_OUTPUT_TOKENS_LIMIT, NUMBER_FIELDS, TOKEN_REFS, draftOps, numberAt, profileOps, tokenDrafts, windowModeOf,
+  MAX_OUTPUT_TOKENS_LIMIT, NUMBER_FIELDS, TOKEN_REFS, draftOps, numberAt, tokenDrafts, windowModeOf,
 } from "../lib/form.js";
 
 import { apply } from "../index.js";
@@ -103,26 +103,19 @@ check("stored window implies custom mode", windowModeOf({ contextWindow: 200000 
 check("useMaxContext implies max mode", windowModeOf({ useMaxContext: true }) === "max");
 check("neither implies catalog mode", windowModeOf({}) === "catalog");
 
-// ---- token drafts and profile edits --------------------------------------
+// ---- token drafts --------------------------------------------------------
 {
   const stored = tokenDrafts({ QODER_API_KEY: " pt-a ", QODER_CN_API_KEY: "  " });
   check("only non-blank tokens are stored", stored.length === 1 && stored[0].value === "pt-a", JSON.stringify(stored));
-  const ops = profileOps(stored, {});
-  check("a stored token marks its profile", opAt(ops, "providers")?.path[1] === "qoder", JSON.stringify(ops));
-  check("the profile names the token reference", opAt(ops, "providers")?.value.apiKeyEnv === "QODER_API_KEY");
-  const again = profileOps(stored, { qoder: { apiKeyEnv: "QODER_API_KEY" } });
-  check("an existing profile is not rewritten", again.length === 0, JSON.stringify(again));
-  check("the CN token marks the CN profile", profileOps(tokenDrafts({ QODER_CN_API_KEY: "jt-a" }), {})[0]?.path[1] === "qoder-cn");
-  // A profile write is a path op on the volatile `providers` dict; a plain
-  // object would be refused by the non-volatile validator.
-  check("the profile write is path-addressed", profileOps(stored, {})[0]?.op === "set" && profileOps(stored, {})[0].path.length === 2);
+  check("a stored token keeps its own reference", stored[0].ref === "QODER_API_KEY", JSON.stringify(stored));
+  check("the CN token keeps the CN reference", tokenDrafts({ QODER_CN_API_KEY: "jt-a" })[0]?.ref === "QODER_CN_API_KEY");
 }
 check("both regions have a reference", TOKEN_REFS.length === 2);
 check("each region writes only its own reference", TOKEN_REFS.every((entry) => entry.aliases.includes(entry.ref)));
 check("the two regions do not share a reference",
   TOKEN_REFS[0].aliases.every((ref) => !TOKEN_REFS[1].aliases.includes(ref)));
 
-// ---- the model list follows the token, not the profile -------------------
+// ---- the model list follows the token ------------------------------------
 {
   const tokens = new Map();
   const credentials = {
@@ -143,12 +136,12 @@ check("the two regions do not share a reference",
       return undefined;
     },
     inject(_deps, callback) { callback({ effect() {} }); return {}; },
-  }, { providers: { get: () => ({}) } });
+  }, {});
 
   check("no token means no models", (await adapter.listModels("qoder")).length === 0);
   tokens.set("QODER_API_KEY", "jt-orphan");
   const models = await adapter.listModels("qoder");
-  check("a token without a profile entry still lists models", models.length > 0, `${models.length} models`);
+  check("a token with no profile entry still lists models", models.length > 0, `${models.length} models`);
   tokens.delete("QODER_API_KEY");
   check("a cleared token lists nothing again", (await adapter.listModels("qoder")).length === 0);
 }
